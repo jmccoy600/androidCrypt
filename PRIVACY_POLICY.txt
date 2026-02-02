@@ -1,0 +1,30 @@
+PRIVACY POLICY
+
+Last Updated: February 1, 2026
+
+AndroidCrypt Privacy Policy
+
+This application does not collect, store, transmit, or share any personal information or data from its users.
+
+DATA COLLECTION
+We do not collect any data. This includes but is not limited to:
+- Personal information (name, email, phone number, etc.)
+- Device information
+- Location data
+- Usage statistics
+- Analytics or telemetry data
+- Cookies or tracking identifiers
+
+DATA STORAGE
+All encryption operations are performed locally on your device. Your passwords, encryption keys, and encrypted files never leave your device and are never transmitted to any external servers.
+
+THIRD-PARTY SERVICES
+This application does not integrate with any third-party analytics, advertising, or tracking services.
+
+NETWORK ACCESS
+This application does not require or use internet connectivity. All functionality operates entirely offline on your device.
+
+CONTACT
+If you have any questions about this privacy policy, please contact the developer.
+
+This privacy policy may be updated from time to time. Any changes will be reflected in the "Last Updated" date above.
