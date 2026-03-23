@@ -1,8 +1,20 @@
 [
 {
   "directory": "/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/arm64-v8a",
-  "command": "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android24 --sysroot=/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dxts_aes_native_EXPORTS -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -fno-limit-debug-info  -std=c++17 -fPIC -O3 -DNDEBUG -o CMakeFiles/xts_aes_native.dir/xts_aes_native.cpp.o -c /home/user/Projects/androidCrypt/app/src/main/cpp/xts_aes_native.cpp",
+  "command": "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++ --target=aarch64-none-linux-android24 --sysroot=/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dxts_aes_native_EXPORTS -I/home/user/Projects/androidCrypt/app/src/main/cpp -I/home/user/Projects/androidCrypt/app/src/main/cpp/Crypto -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -std=c++17 -fno-limit-debug-info  -std=c++17 -fPIC -O3 -DNDEBUG -DCRYPTOPP_DISABLE_ASM -o CMakeFiles/xts_aes_native.dir/xts_aes_native.cpp.o -c /home/user/Projects/androidCrypt/app/src/main/cpp/xts_aes_native.cpp",
   "file": "/home/user/Projects/androidCrypt/app/src/main/cpp/xts_aes_native.cpp",
   "output": "/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/arm64-v8a/CMakeFiles/xts_aes_native.dir/xts_aes_native.cpp.o"
+},
+{
+  "directory": "/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/arm64-v8a",
+  "command": "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=aarch64-none-linux-android24 --sysroot=/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dxts_aes_native_EXPORTS -I/home/user/Projects/androidCrypt/app/src/main/cpp -I/home/user/Projects/androidCrypt/app/src/main/cpp/Crypto -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -fno-limit-debug-info  -fPIC -O3 -DNDEBUG -DCRYPTOPP_DISABLE_ASM -o CMakeFiles/xts_aes_native.dir/Serpent.c.o -c /home/user/Projects/androidCrypt/app/src/main/cpp/Serpent.c",
+  "file": "/home/user/Projects/androidCrypt/app/src/main/cpp/Serpent.c",
+  "output": "/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/arm64-v8a/CMakeFiles/xts_aes_native.dir/Serpent.c.o"
+},
+{
+  "directory": "/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/arm64-v8a",
+  "command": "/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --target=aarch64-none-linux-android24 --sysroot=/home/user/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/sysroot -Dxts_aes_native_EXPORTS -I/home/user/Projects/androidCrypt/app/src/main/cpp -I/home/user/Projects/androidCrypt/app/src/main/cpp/Crypto -g -DANDROID -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security  -fno-limit-debug-info  -fPIC -O3 -DNDEBUG -DCRYPTOPP_DISABLE_ASM -o CMakeFiles/xts_aes_native.dir/Twofish.c.o -c /home/user/Projects/androidCrypt/app/src/main/cpp/Twofish.c",
+  "file": "/home/user/Projects/androidCrypt/app/src/main/cpp/Twofish.c",
+  "output": "/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/arm64-v8a/CMakeFiles/xts_aes_native.dir/Twofish.c.o"
 }
 ]

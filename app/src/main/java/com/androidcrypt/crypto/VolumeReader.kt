@@ -196,38 +196,51 @@ class VolumeReader(
         }
         
         // Use custom PBKDF2 that accepts byte arrays (required for keyfile support)
+        // Derive max key length needed across all algorithms (192 for AES-Twofish-Serpent cascade)
+        // Single ciphers only use the first 64 bytes; cascade uses all 192.
+        val maxDkLen = EncryptionAlgorithm.entries.maxOf { it.keySize }
         val derivedKey = PBKDF2.deriveKey(
             password = passwordBytes,
             salt = salt,
             iterations = iterations,
             hashAlgorithm = HashAlgorithm.SHA512,
-            dkLen = 64  // 64 bytes for AES-256 in XTS mode
+            dkLen = maxDkLen
         )
         
-        // Try to decrypt and validate header
-        val decryptedHeader = decryptHeader(encryptedHeaderData, derivedKey)
+        // Try to decrypt and validate header with each supported algorithm
+        var decryptedHeader: ByteArray? = null
+        var matchedAlgorithm: EncryptionAlgorithm? = null
         
-        // Validate magic bytes
-        if (decryptedHeader[0] != 'V'.code.toByte() ||
-            decryptedHeader[1] != 'E'.code.toByte() ||
-            decryptedHeader[2] != 'R'.code.toByte() ||
-            decryptedHeader[3] != 'A'.code.toByte()) {
-            Log.e(TAG, "Header validation failed - magic bytes mismatch")
+        for (algo in EncryptionAlgorithm.entries) {
+            val algoKey = derivedKey.copyOfRange(0, algo.keySize)
+            val candidate = decryptHeader(encryptedHeaderData, algoKey, algo)
+            if (candidate[0] == 'V'.code.toByte() &&
+                candidate[1] == 'E'.code.toByte() &&
+                candidate[2] == 'R'.code.toByte() &&
+                candidate[3] == 'A'.code.toByte()) {
+                decryptedHeader = candidate
+                matchedAlgorithm = algo
+                break
+            }
+        }
+        
+        if (decryptedHeader == null || matchedAlgorithm == null) {
+            Log.e(TAG, "Header validation failed - no algorithm produced valid magic bytes")
             return Result.failure(Exception("Invalid password or corrupted header"))
         }
         
-        if (DEBUG_LOGGING) Log.d(TAG, "Header decrypted successfully")
+        if (DEBUG_LOGGING) Log.d(TAG, "Header decrypted successfully with ${matchedAlgorithm.algorithmName}")
         
         // Extract volume information
         dataAreaOffset = readLong(decryptedHeader, 44)
         dataAreaSize = readLong(decryptedHeader, 52)
         val sectorSize = readInt(decryptedHeader, 64)
         
-        // Extract master key from decrypted header
-        masterKey = decryptedHeader.copyOfRange(192, 192 + 64)
+        // Extract master key from decrypted header (size depends on algorithm)
+        masterKey = decryptedHeader.copyOfRange(192, 192 + matchedAlgorithm.keySize)
         
         // Cache XTS mode instance and algorithm for performance
-        encryptionAlgorithm = EncryptionAlgorithm.AES
+        encryptionAlgorithm = matchedAlgorithm
         xtsMode = XTSMode(masterKey!!, encryptionAlgorithm)
         
         if (DEBUG_LOGGING) Log.d(TAG, "Volume info - Data offset: $dataAreaOffset, size: $dataAreaSize, sector: $sectorSize")
@@ -247,11 +260,12 @@ class VolumeReader(
     /**
      * Decrypt volume header
      */
-    private fun decryptHeader(encryptedHeaderData: ByteArray, derivedKey: ByteArray): ByteArray {
-        // Decrypt using XTS-AES mode with the full 64-byte derived key
+    private fun decryptHeader(encryptedHeaderData: ByteArray, derivedKey: ByteArray, algorithm: EncryptionAlgorithm): ByteArray {
+        // Decrypt using XTS mode with the full 64-byte derived key
         // Header is treated as sector 0
-        val xts = XTSMode(derivedKey, EncryptionAlgorithm.AES)
+        val xts = XTSMode(derivedKey, algorithm)
         val decryptedHeader = xts.decrypt(encryptedHeaderData, 0)
+        xts.close()
         
         return decryptedHeader
     }

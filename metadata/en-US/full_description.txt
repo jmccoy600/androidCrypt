@@ -1,0 +1,54 @@
+AndroidCrypt brings VeraCrypt encryption to your Android device. Access your encrypted containers created on Windows, Mac, or Linux - or create new ones directly on your phone or tablet.
+
+🔐 VERACRYPT COMPATIBILITY
+Open VeraCrypt containers on Android. Your encrypted files travel seamlessly between your computer and mobile device. No conversion needed - the same container works everywhere.
+
+🛡️ ENCRYPTION ALGORITHMS (XTS MODE)
+Single ciphers:
+• AES-256 (Rijndael) - The worldwide encryption standard
+• Serpent-256 - Conservative design with large security margin
+• Twofish-256 - Fast and flexible block cipher
+
+Cascade ciphers (triple-layered encryption):
+• AES-Twofish-Serpent
+• Serpent-Twofish-AES
+
+All ciphers use XTS mode for secure disk encryption (IEEE 1619 compliant).
+
+🔑 STRONG KEY DERIVATION
+• PBKDF2 with 500,000+ iterations
+• SHA-512, SHA-256, Whirlpool, BLAKE2s, and Streebog hash algorithms
+• Resistant to brute-force attacks
+
+📁 EASY FILE MANAGEMENT
+• Browse files inside encrypted containers
+• Copy files between your device and encrypted volumes
+• Create folders and organize your secure files
+• Mount multiple containers at once
+• Copy files between different encrypted volumes
+
+✨ CREATE NEW CONTAINERS
+• Choose AES, Serpent, Twofish or all three cascade for your new container
+• FAT32 formatted for cross-platform compatibility
+
+🔒 PRIVACY FIRST
+• 100% offline - works without internet
+• Zero data collection - we don't track anything
+• No analytics, no ads, no telemetry
+• Your passwords and files never leave your device
+• Open source and auditable
+
+PERFECT FOR:
+• Journalists protecting sources
+• Business professionals securing confidential documents
+• Travelers keeping passport and ID copies safe
+• Anyone who values privacy and security
+• Existing VeraCrypt users who need mobile access
+
+TECHNICAL SPECIFICATIONS:
+• AES-256, Serpent-256, Twofish-256 encryption in XTS mode
+• Cascade ciphers: AES-Twofish-Serpent, Serpent-Twofish-AES
+• Key derivation: PBKDF2-HMAC with SHA-512, SHA-256, Whirlpool, BLAKE2s, Streebog
+• FAT32 file system support
+• Container sizes from 1MB to device storage limit
+• Compatible with VeraCrypt encrypted file containers

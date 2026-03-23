@@ -47,7 +47,11 @@ object VolumeConstants {
  * Encryption algorithms supported
  */
 enum class EncryptionAlgorithm(val keySize: Int, val blockSize: Int, val algorithmName: String) {
-    AES(64, 16, "AES");           // XTS: 32 bytes encryption + 32 bytes tweak
+    AES(64, 16, "AES"),                              // XTS: 32 bytes encryption + 32 bytes tweak
+    SERPENT(64, 16, "Serpent"),                       // XTS: 32 bytes encryption + 32 bytes tweak
+    TWOFISH(64, 16, "Twofish"),                       // XTS: 32 bytes encryption + 32 bytes tweak
+    AES_TWOFISH_SERPENT(192, 16, "AES-Twofish-Serpent"), // Cascade: 3×32 primary + 3×32 secondary
+    SERPENT_TWOFISH_AES(192, 16, "Serpent-Twofish-AES"); // Cascade: 3×32 primary + 3×32 secondary
     
     fun getDerivedKeySize(): Int = keySize
 }
@@ -134,13 +138,19 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
     private var nativeHandle: Long = 0L
 
     init {
-        require(key.size == 32 || key.size == 64) {
-            "Key size must be 32 bytes (AES-128) or 64 bytes (AES-256) for XTS mode, got ${key.size}"
+        require(key.size == algorithm.keySize) {
+            "Key size must be ${algorithm.keySize} bytes for ${algorithm.algorithmName} XTS mode, got ${key.size}"
         }
         val halfKeySize = key.size / 2
         key1 = key.copyOfRange(0, halfKeySize)
         key2 = key.copyOfRange(halfKeySize, key.size)
-        nativeHandle = NativeXTS.createContext(key1, key2)
+        nativeHandle = when (algorithm) {
+            EncryptionAlgorithm.AES -> NativeXTS.createContext(key1, key2)
+            EncryptionAlgorithm.SERPENT -> NativeSerpentXTS.createContext(key1, key2)
+            EncryptionAlgorithm.TWOFISH -> NativeTwofishXTS.createContext(key1, key2)
+            EncryptionAlgorithm.AES_TWOFISH_SERPENT -> NativeCascadeXTS.createContext(key1, key2)
+            EncryptionAlgorithm.SERPENT_TWOFISH_AES -> NativeCascadeSTA_XTS.createContext(key1, key2)
+        }
     }
 
     /** Release the native XTS context. Safe to call multiple times. */
@@ -148,7 +158,13 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
         val h = nativeHandle
         if (h != 0L) {
             nativeHandle = 0L
-            NativeXTS.destroyContext(h)
+            when (algorithm) {
+                EncryptionAlgorithm.AES -> NativeXTS.destroyContext(h)
+                EncryptionAlgorithm.SERPENT -> NativeSerpentXTS.destroyContext(h)
+                EncryptionAlgorithm.TWOFISH -> NativeTwofishXTS.destroyContext(h)
+                EncryptionAlgorithm.AES_TWOFISH_SERPENT -> NativeCascadeXTS.destroyContext(h)
+                EncryptionAlgorithm.SERPENT_TWOFISH_AES -> NativeCascadeSTA_XTS.destroyContext(h)
+            }
         }
     }
 
@@ -168,7 +184,18 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
         }
         val result = data.copyOf()
         val tweakSector = dataUnitNo + (startOffset / algorithm.blockSize)
-        NativeXTS.encryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+        when (algorithm) {
+            EncryptionAlgorithm.AES ->
+                NativeXTS.encryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.SERPENT ->
+                NativeSerpentXTS.encryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.TWOFISH ->
+                NativeTwofishXTS.encryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.AES_TWOFISH_SERPENT ->
+                NativeCascadeXTS.encryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.SERPENT_TWOFISH_AES ->
+                NativeCascadeSTA_XTS.encryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+        }
         return result
     }
     
@@ -181,7 +208,18 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
         }
         val result = data.copyOf()
         val tweakSector = dataUnitNo + (startOffset / algorithm.blockSize)
-        NativeXTS.decryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+        when (algorithm) {
+            EncryptionAlgorithm.AES ->
+                NativeXTS.decryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.SERPENT ->
+                NativeSerpentXTS.decryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.TWOFISH ->
+                NativeTwofishXTS.decryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.AES_TWOFISH_SERPENT ->
+                NativeCascadeXTS.decryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+            EncryptionAlgorithm.SERPENT_TWOFISH_AES ->
+                NativeCascadeSTA_XTS.decryptSectors(nativeHandle, result, 0, tweakSector, data.size, 1)
+        }
         return result
     }
     
@@ -195,7 +233,18 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
             "Data size must be multiple of block size (${algorithm.blockSize})"
         }
         val result = data.copyOf()
-        NativeXTS.decryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+        when (algorithm) {
+            EncryptionAlgorithm.AES ->
+                NativeXTS.decryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.SERPENT ->
+                NativeSerpentXTS.decryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.TWOFISH ->
+                NativeTwofishXTS.decryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.AES_TWOFISH_SERPENT ->
+                NativeCascadeXTS.decryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.SERPENT_TWOFISH_AES ->
+                NativeCascadeSTA_XTS.decryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+        }
         return result
     }
     
@@ -208,7 +257,18 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
             "Data size must be multiple of block size (${algorithm.blockSize})"
         }
         val result = data.copyOf()
-        NativeXTS.encryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+        when (algorithm) {
+            EncryptionAlgorithm.AES ->
+                NativeXTS.encryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.SERPENT ->
+                NativeSerpentXTS.encryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.TWOFISH ->
+                NativeTwofishXTS.encryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.AES_TWOFISH_SERPENT ->
+                NativeCascadeXTS.encryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+            EncryptionAlgorithm.SERPENT_TWOFISH_AES ->
+                NativeCascadeSTA_XTS.encryptSectors(nativeHandle, result, 0, dataUnitNo, data.size, 1)
+        }
         return result
     }
     
@@ -228,7 +288,18 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
         if (plainData !== encryptedData) {
             System.arraycopy(plainData, startOffset, encryptedData, startOffset, sectorCount * sectorSize)
         }
-        NativeXTS.encryptSectors(nativeHandle, encryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+        when (algorithm) {
+            EncryptionAlgorithm.AES ->
+                NativeXTS.encryptSectors(nativeHandle, encryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.SERPENT ->
+                NativeSerpentXTS.encryptSectors(nativeHandle, encryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.TWOFISH ->
+                NativeTwofishXTS.encryptSectors(nativeHandle, encryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.AES_TWOFISH_SERPENT ->
+                NativeCascadeXTS.encryptSectors(nativeHandle, encryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.SERPENT_TWOFISH_AES ->
+                NativeCascadeSTA_XTS.encryptSectors(nativeHandle, encryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+        }
     }
     
     /**
@@ -253,6 +324,17 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
         if (encryptedData !== decryptedData) {
             System.arraycopy(encryptedData, startOffset, decryptedData, startOffset, sectorCount * sectorSize)
         }
-        NativeXTS.decryptSectors(nativeHandle, decryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+        when (algorithm) {
+            EncryptionAlgorithm.AES ->
+                NativeXTS.decryptSectors(nativeHandle, decryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.SERPENT ->
+                NativeSerpentXTS.decryptSectors(nativeHandle, decryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.TWOFISH ->
+                NativeTwofishXTS.decryptSectors(nativeHandle, decryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.AES_TWOFISH_SERPENT ->
+                NativeCascadeXTS.decryptSectors(nativeHandle, decryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+            EncryptionAlgorithm.SERPENT_TWOFISH_AES ->
+                NativeCascadeSTA_XTS.decryptSectors(nativeHandle, decryptedData, startOffset, startSectorNo, sectorSize, sectorCount)
+        }
     }
 }

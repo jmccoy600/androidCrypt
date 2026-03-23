@@ -1,3 +1,0 @@
-/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/x86_64/CMakeFiles/xts_aes_native.dir
-/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/x86_64/CMakeFiles/edit_cache.dir
-/home/user/Projects/androidCrypt/app/.cxx/Debug/4r51z1j3/x86_64/CMakeFiles/rebuild_cache.dir

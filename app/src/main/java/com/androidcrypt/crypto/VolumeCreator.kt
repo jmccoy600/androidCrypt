@@ -35,6 +35,7 @@ class VolumeCreator {
          * @param pim Personal Iterations Multiplier (0 for default)
          * @param keyfileUris List of keyfile URIs (optional)
          * @param context Android context (required if using keyfiles)
+         * @param algorithm Encryption algorithm (AES or Serpent, default AES)
          * @return Result with success/error message
          */
         fun createContainer(
@@ -43,7 +44,8 @@ class VolumeCreator {
             sizeInMB: Long,
             pim: Int = 0,
             keyfileUris: List<Uri> = emptyList(),
-            context: Context? = null
+            context: Context? = null,
+            algorithm: EncryptionAlgorithm = EncryptionAlgorithm.AES
         ): Result<String> {
             return try {
                 val containerFile = File(containerPath)
@@ -100,15 +102,15 @@ class VolumeCreator {
                         salt = salt,
                         iterations = iterations,
                         hashAlgorithm = HashAlgorithm.SHA512,
-                        dkLen = 64  // 64 bytes for AES-256 in XTS mode (2 x 32-byte keys)
+                        dkLen = algorithm.keySize  // 64 for single ciphers, 192 for AES-Twofish-Serpent
                     )
                     
                     // Generate random master key for data encryption
-                    val masterKey = ByteArray(64)
+                    val masterKey = ByteArray(algorithm.keySize)
                     SecureRandom().nextBytes(masterKey)
                     
                     // Create volume header
-                    val headerBytes = createVolumeHeader(salt, derivedKey, masterKey, totalBytes)
+                    val headerBytes = createVolumeHeader(salt, derivedKey, masterKey, totalBytes, algorithm)
                     
                     // Write primary header at offset 0 (salt + encrypted header = 512 bytes)
                     raf.seek(0)
@@ -124,7 +126,7 @@ class VolumeCreator {
                     Log.d(TAG, "Primary header at offset 0, backup header at offset $backupHeaderOffset")
                     
                     // Format the data area with FAT32 file system
-                    formatFAT32(raf, masterKey, totalBytes)
+                    formatFAT32(raf, masterKey, totalBytes, algorithm)
                     
                     Log.d(TAG, "FAT32 file system created")
                 }
@@ -145,7 +147,8 @@ class VolumeCreator {
             salt: ByteArray,
             derivedKey: ByteArray,
             masterKey: ByteArray,
-            volumeSize: Long
+            volumeSize: Long,
+            algorithm: EncryptionAlgorithm = EncryptionAlgorithm.AES
         ): ByteArray {
             // VeraCrypt header structure:
             // Total: 512 bytes (TC_VOLUME_HEADER_EFFECTIVE_SIZE)
@@ -223,9 +226,10 @@ class VolumeCreator {
             unencryptedData[190] = (crcHeaderValue shr 8).toByte()
             unencryptedData[191] = crcHeaderValue.toByte()
             
-            // Encrypt the 448-byte header data using XTS-AES mode
-            val xts = XTSMode(derivedKey, EncryptionAlgorithm.AES)
+            // Encrypt the 448-byte header data using XTS mode
+            val xts = XTSMode(derivedKey, algorithm)
             val encryptedData = xts.encrypt(unencryptedData, 0)
+            xts.close()
             
             // Create final result: salt (64 bytes) + encrypted data (448 bytes) = 512 bytes
             val result = ByteArray(512)
@@ -238,7 +242,7 @@ class VolumeCreator {
         /**
          * Format the data area with FAT32 file system
          */
-        private fun formatFAT32(raf: RandomAccessFile, masterKey: ByteArray, totalBytes: Long) {
+        private fun formatFAT32(raf: RandomAccessFile, masterKey: ByteArray, totalBytes: Long, algorithm: EncryptionAlgorithm = EncryptionAlgorithm.AES) {
             // Data area size = total file size - all 4 headers (256KB)
             val dataAreaSize = totalBytes - TOTAL_HEADERS_SIZE
             val sectorCount = (dataAreaSize / SECTOR_SIZE).toInt()
@@ -377,7 +381,7 @@ class VolumeCreator {
             val startSector = DATA_AREA_OFFSET / SECTOR_SIZE
             
             // Encrypt and write boot sector
-            val xts = XTSMode(masterKey, EncryptionAlgorithm.AES)
+            val xts = XTSMode(masterKey, algorithm)
             val encryptedBootSector = xts.encrypt(bootSector, startSector)
             raf.seek(DATA_AREA_OFFSET)
             raf.write(encryptedBootSector)

@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.androidcrypt.crypto.VolumeCreator
 import com.androidcrypt.crypto.VolumeMountManager
+import com.androidcrypt.crypto.EncryptionAlgorithm
 import com.androidcrypt.crypto.MountedVolumeInfo
 import com.androidcrypt.crypto.FAT32Reader
 import com.androidcrypt.crypto.FileEntry
@@ -483,13 +484,6 @@ fun OpenContainerScreen(onNavigateToTab: (Int) -> Unit = {}) {
             }
         }
         
-        Text(
-            text = "Note: This app provides basic VeraCrypt container support. " +
-                    "Only AES encryption is currently supported.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        
         // Link to How to Use tab
         TextButton(
             onClick = { onNavigateToTab(4) },
@@ -522,6 +516,8 @@ fun CreateContainerScreen() {
     var keyfileUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var keyfileNames by remember { mutableStateOf<List<String>>(emptyList()) }
     var useKeyfiles by remember { mutableStateOf(false) }
+    var selectedAlgorithm by remember { mutableStateOf(EncryptionAlgorithm.AES) }
+    var algorithmDropdownExpanded by remember { mutableStateOf(false) }
     
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -631,6 +627,39 @@ fun CreateContainerScreen() {
             placeholder = { Text("0 for default") }
         )
         
+        // Encryption algorithm selector
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = selectedAlgorithm.algorithmName,
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Encryption Algorithm") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !isCreating) { algorithmDropdownExpanded = true },
+                enabled = false,
+                colors = OutlinedTextFieldDefaults.colors(
+                    disabledTextColor = MaterialTheme.colorScheme.onSurface,
+                    disabledBorderColor = MaterialTheme.colorScheme.outline,
+                    disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            )
+            DropdownMenu(
+                expanded = algorithmDropdownExpanded,
+                onDismissRequest = { algorithmDropdownExpanded = false }
+            ) {
+                EncryptionAlgorithm.entries.forEach { algo ->
+                    DropdownMenuItem(
+                        text = { Text(algo.algorithmName) },
+                        onClick = {
+                            selectedAlgorithm = algo
+                            algorithmDropdownExpanded = false
+                        }
+                    )
+                }
+            }
+        }
+        
         // Keyfiles section
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -689,7 +718,7 @@ fun CreateContainerScreen() {
         
         Button(
             onClick = {
-                if (password != confirmPassword) {
+                if (confirmPassword.isNotEmpty() && password != confirmPassword) {
                     statusMessage = "Error: Passwords do not match!"
                     return@Button
                 }
@@ -717,7 +746,8 @@ fun CreateContainerScreen() {
                                 sizeInMB = sizeMB,
                                 pim = pimValue,
                                 keyfileUris = if (useKeyfiles) keyfileUris else emptyList(),
-                                context = context
+                                context = context,
+                                algorithm = selectedAlgorithm
                             )
                         }
                         
@@ -776,7 +806,7 @@ fun CreateContainerScreen() {
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
-                Text("Algorithm: AES", style = MaterialTheme.typography.bodyMedium)
+                Text("Algorithm: ${selectedAlgorithm.algorithmName}", style = MaterialTheme.typography.bodyMedium)
                 Text("Mode: XTS", style = MaterialTheme.typography.bodyMedium)
                 Text("Hash: SHA-512", style = MaterialTheme.typography.bodyMedium)
             }
