@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.androidcrypt"
+    namespace = "com.androidcrypt"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "com.example.androidcrypt"
+        applicationId = "com.androidcrypt"
         minSdk = 24
         targetSdk = 36
         versionCode = 1

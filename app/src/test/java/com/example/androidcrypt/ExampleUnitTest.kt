@@ -1,4 +1,4 @@
-package com.example.androidcrypt
+package com.androidcrypt
 
 import org.junit.Test
 
