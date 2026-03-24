@@ -1,6 +1,0 @@
-#!/bin/sh
-# Get the directory where AppRun is located
-APPDIR=$(dirname "$(readlink -f "$0")")
-
-# Execute the main VeraCrypt application
-exec "${APPDIR}/usr/bin/veracrypt" "$@"
