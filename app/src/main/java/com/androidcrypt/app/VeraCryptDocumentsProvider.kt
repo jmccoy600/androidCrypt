@@ -246,7 +246,7 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
             
         } catch (e: Exception) {
             Log.e(TAG, "Error finding document path", e)
-            throw FileNotFoundException("Cannot find path for: $childDocumentId")
+            throw FileNotFoundException("Cannot find document path")
         }
     }
     
@@ -311,7 +311,7 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
      * Return metadata for a document (file or directory)
      */
     override fun queryDocument(documentId: String, projection: Array<out String>?): Cursor {
-        Log.d(TAG, "queryDocument: $documentId")
+        if (DEBUG_LOGGING) Log.d(TAG, "queryDocument: $documentId")
         
         val result = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION)
         
@@ -330,7 +330,7 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
             
         } catch (e: Exception) {
             Log.e(TAG, "Error querying document", e)
-            throw FileNotFoundException("Cannot find document: $documentId")
+            throw FileNotFoundException("Cannot find document")
         }
         
         return result
@@ -372,7 +372,7 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
         projection: Array<out String>?,
         sortOrder: String?
     ): Cursor {
-        Log.d(TAG, "queryChildDocuments: $parentDocumentId")
+        if (DEBUG_LOGGING) Log.d(TAG, "queryChildDocuments: $parentDocumentId")
         
         val result = MatrixCursor(projection ?: DEFAULT_DOCUMENT_PROJECTION)
         val queryStart = System.currentTimeMillis()
@@ -401,14 +401,14 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
             }
             
             val elapsed = System.currentTimeMillis() - queryStart
-            Log.d(TAG, "queryChildDocuments: $includedCount items (skipped=$skippedCount) in ${elapsed}ms")
+            if (DEBUG_LOGGING) Log.d(TAG, "queryChildDocuments: $includedCount items in ${elapsed}ms")
             
             // Set notification URI so file manager can watch for changes
             val notifyUri = DocumentsContract.buildChildDocumentsUri(AUTHORITY, parentDocumentId)
             result.setNotificationUri(context?.contentResolver, notifyUri)
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error querying child documents (after ${System.currentTimeMillis() - queryStart}ms)", e)
+            Log.e(TAG, "Error querying child documents", e)
             // Return empty cursor on error
         }
         
@@ -459,7 +459,7 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
             
         } catch (e: Exception) {
             Log.e(TAG, "Error opening document", e)
-            throw FileNotFoundException("Cannot open document: ${e.message}")
+            throw FileNotFoundException("Cannot open document")
         }
     }
     
@@ -688,9 +688,14 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
         }
         
         override fun onRelease() {
+            // Zero decrypted data to prevent it lingering in memory
+            localCachedData?.fill(0)
+            localCachedData = null
             synchronized(cacheLock) {
+                cachedData?.fill(0)
                 cachedData = null
                 cachedOffset = -1
+                readAheadData?.fill(0)
                 readAheadData = null
                 readAheadOffset = -1
             }
@@ -1020,18 +1025,30 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
     
     /**
      * Helper: Generate root ID from volume path
+     * Uses Base64-encoded path to avoid hashCode collisions
      */
     private fun getRootId(volumePath: String): String {
-        return ROOT_ID_PREFIX + volumePath.hashCode().toString()
+        val encoded = android.util.Base64.encodeToString(
+            volumePath.toByteArray(Charsets.UTF_8),
+            android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE
+        )
+        return ROOT_ID_PREFIX + encoded
     }
     
     /**
      * Helper: Get volume path from root ID
      */
     private fun getVolumePathFromRootId(rootId: String): String {
-        val hashCode = rootId.removePrefix(ROOT_ID_PREFIX).toInt()
-        return VolumeMountManager.getMountedVolumes().find { it.hashCode() == hashCode }
-            ?: throw FileNotFoundException("Volume not found for root: $rootId")
+        val encoded = rootId.removePrefix(ROOT_ID_PREFIX)
+        val decoded = String(
+            android.util.Base64.decode(encoded, android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE),
+            Charsets.UTF_8
+        )
+        // Verify the volume is actually mounted
+        if (!VolumeMountManager.isMounted(decoded)) {
+            throw FileNotFoundException("Volume not found for root: $rootId")
+        }
+        return decoded
     }
     
     /**
@@ -1048,17 +1065,25 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
         // Format: "veracrypt_XXXX:/path" - find the FIRST colon after "veracrypt_"
         val rootIdPrefix = "veracrypt_"
         if (!documentId.startsWith(rootIdPrefix)) {
-            throw IllegalArgumentException("Invalid document ID: $documentId")
+            throw IllegalArgumentException("Invalid document ID")
         }
         
         // Find first colon after the veracrypt_ prefix
         val colonIndex = documentId.indexOf(':', rootIdPrefix.length)
         if (colonIndex == -1) {
-            throw IllegalArgumentException("Invalid document ID: $documentId")
+            throw IllegalArgumentException("Invalid document ID")
         }
         
         val rootId = documentId.substring(0, colonIndex)
         val path = documentId.substring(colonIndex + 1)
+        
+        // Path traversal validation: reject null bytes, .. segments, and double slashes
+        if (path.contains('\u0000') ||
+            path.split('/').any { it == ".." } ||
+            path.contains("//")) {
+            throw SecurityException("Invalid path in document ID")
+        }
+        
         return Pair(rootId, path)
     }
     
@@ -1067,6 +1092,21 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
      */
     fun notifyVolumeUnmounted(volumePath: String) {
         // VolumeMountManager handles reader cache cleanup on unmount
+        
+        // Clear decrypted data caches to prevent stale decrypted content from lingering
+        val prefix = "$volumePath:"
+        synchronized(thumbnailCacheLock) {
+            val keysToRemove = thumbnailCache.keys.filter { it.startsWith(prefix) }
+            for (key in keysToRemove) {
+                thumbnailCache.remove(key)?.second?.fill(0)  // Zero decrypted data
+            }
+        }
+        synchronized(videoCacheLock) {
+            val keysToRemove = videoCache.keys.filter { it.startsWith(prefix) }
+            for (key in keysToRemove) {
+                videoCache.remove(key)?.second?.fill(0)  // Zero decrypted data
+            }
+        }
         
         val rootUri = DocumentsContract.buildRootsUri(AUTHORITY)
         context?.contentResolver?.notifyChange(rootUri, null)

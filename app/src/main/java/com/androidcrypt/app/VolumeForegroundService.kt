@@ -83,8 +83,8 @@ class VolumeForegroundService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("VeraCrypt volume mounted")
-            .setContentText("Tap to open")
+            .setContentTitle("Encrypted storage active")
+            .setContentText("Tap to manage")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .setContentIntent(pendingIntent)

@@ -61,12 +61,15 @@ object PBKDF2 {
         
         // Remaining iterations
         for (i in 2..iterations) {
+            val prev = u
             mac.reset()
             u = mac.doFinal(u)
+            prev.fill(0)  // Zero previous intermediate HMAC output
             for (j in result.indices) {
                 result[j] = (result[j].toInt() xor u[j].toInt()).toByte()
             }
         }
+        u.fill(0)  // Zero final intermediate HMAC output
         
         return result
     }
@@ -87,11 +90,11 @@ class VolumeHeaderParser {
      */
     fun parseHeader(
         headerData: ByteArray,
-        password: String,
+        password: CharArray,
         pim: Int = 0
     ): VolumeHeaderData? {
         require(headerData.size >= VolumeConstants.VOLUME_HEADER_EFFECTIVE_SIZE) {
-            "Header data must be at least ${VolumeConstants.VOLUME_HEADER_EFFECTIVE_SIZE} bytes"
+            "Header data too small"
         }
         
         // Extract salt
@@ -106,30 +109,36 @@ class VolumeHeaderParser {
             VolumeConstants.ENCRYPTED_DATA_OFFSET + VolumeConstants.ENCRYPTED_DATA_SIZE
         )
         
-        // Try all combinations of hash algorithms and encryption algorithms
-        for (hashAlg in HashAlgorithm.values()) {
-            for (encAlg in listOf(EncryptionAlgorithm.AES)) { // Start with AES only
-                try {
-                    val decrypted = tryDecrypt(
-                        encryptedData,
-                        password.toByteArray(Charsets.UTF_8),
-                        salt,
-                        pim,
-                        hashAlg,
-                        encAlg
-                    )
-                    
-                    if (decrypted != null) {
-                        return decrypted
+        // Convert password to bytes once (avoids creating intermediate String)
+        val passwordBytes = charArrayToUtf8Bytes(password)
+        try {
+            // Try all combinations of hash algorithms and encryption algorithms
+            for (hashAlg in HashAlgorithm.values()) {
+                for (encAlg in listOf(EncryptionAlgorithm.AES)) { // Start with AES only
+                    try {
+                        val decrypted = tryDecrypt(
+                            encryptedData,
+                            passwordBytes,
+                            salt,
+                            pim,
+                            hashAlg,
+                            encAlg
+                        )
+                        
+                        if (decrypted != null) {
+                            return decrypted
+                        }
+                    } catch (e: Exception) {
+                        // Try next combination
+                        continue
                     }
-                } catch (e: Exception) {
-                    // Try next combination
-                    continue
                 }
             }
+            
+            return null
+        } finally {
+            passwordBytes.fill(0)
         }
-        
-        return null
     }
     
     private fun tryDecrypt(
@@ -150,12 +159,17 @@ class VolumeHeaderParser {
             encAlg.getDerivedKeySize()
         )
         
-        // Decrypt header
         val xts = XTSMode(derivedKey, encAlg)
-        val decrypted = xts.decrypt(encryptedData, 0)
-        
-        // Validate header
-        return validateAndParse(decrypted, encAlg, hashAlg)
+        try {
+            // Decrypt header
+            val decrypted = xts.decrypt(encryptedData, 0)
+            
+            // Validate header
+            return validateAndParse(decrypted, encAlg, hashAlg)
+        } finally {
+            derivedKey.fill(0)
+            xts.close()
+        }
     }
     
     private fun validateAndParse(
@@ -163,7 +177,7 @@ class VolumeHeaderParser {
         encAlg: EncryptionAlgorithm,
         hashAlg: HashAlgorithm
     ): VolumeHeaderData? {
-        val buffer = ByteBuffer.wrap(decryptedData).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(decryptedData).order(ByteOrder.BIG_ENDIAN)
         
         // Check magic number
         buffer.position(VolumeConstants.HEADER_OFFSET_MAGIC)
@@ -191,7 +205,7 @@ class VolumeHeaderParser {
         
         // Calculate CRC of header (excluding CRC field itself)
         val headerForCrc = decryptedData.copyOf()
-        ByteBuffer.wrap(headerForCrc).order(ByteOrder.LITTLE_ENDIAN).apply {
+        ByteBuffer.wrap(headerForCrc).order(ByteOrder.BIG_ENDIAN).apply {
             position(VolumeConstants.HEADER_OFFSET_HEADER_CRC)
             putInt(0)
         }
@@ -258,7 +272,7 @@ class VolumeHeaderParser {
      * Create a new VeraCrypt volume header
      */
     fun createHeader(
-        password: String,
+        password: CharArray,
         pim: Int = 0,
         volumeSize: Long,
         encryptionAlg: EncryptionAlgorithm = EncryptionAlgorithm.AES,
@@ -275,7 +289,7 @@ class VolumeHeaderParser {
         
         // Create header data
         val headerData = ByteArray(VolumeConstants.ENCRYPTED_DATA_SIZE)
-        val buffer = ByteBuffer.wrap(headerData).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(headerData).order(ByteOrder.BIG_ENDIAN)
         
         // Magic number
         buffer.position(VolumeConstants.HEADER_OFFSET_MAGIC)
@@ -332,7 +346,7 @@ class VolumeHeaderParser {
         
         // Calculate and store header CRC
         val headerForCrc = headerData.copyOf()
-        ByteBuffer.wrap(headerForCrc).order(ByteOrder.LITTLE_ENDIAN).apply {
+        ByteBuffer.wrap(headerForCrc).order(ByteOrder.BIG_ENDIAN).apply {
             position(VolumeConstants.HEADER_OFFSET_HEADER_CRC)
             putInt(0)
         }
@@ -342,24 +356,33 @@ class VolumeHeaderParser {
         
         // Derive encryption key from password
         val iterations = hashAlg.getIterationCount(pim, isSystemEncryption = false)
+        val passwordBytes = charArrayToUtf8Bytes(password)
         val headerKey = PBKDF2.deriveKey(
-            password.toByteArray(Charsets.UTF_8),
+            passwordBytes,
             salt,
             iterations,
             hashAlg,
             encryptionAlg.getDerivedKeySize()
         )
+        passwordBytes.fill(0)  // Zero password bytes immediately
         
         // Encrypt header
         val xts = XTSMode(headerKey, encryptionAlg)
-        val encryptedHeader = xts.encrypt(headerData, 0)
-        
-        // Combine salt and encrypted header
-        val fullHeader = ByteArray(VolumeConstants.VOLUME_HEADER_EFFECTIVE_SIZE)
-        System.arraycopy(salt, 0, fullHeader, VolumeConstants.SALT_OFFSET, salt.size)
-        System.arraycopy(encryptedHeader, 0, fullHeader, VolumeConstants.ENCRYPTED_DATA_OFFSET, encryptedHeader.size)
-        
-        return fullHeader
+        try {
+            val encryptedHeader = xts.encrypt(headerData, 0)
+            
+            // Combine salt and encrypted header
+            val fullHeader = ByteArray(VolumeConstants.VOLUME_HEADER_EFFECTIVE_SIZE)
+            System.arraycopy(salt, 0, fullHeader, VolumeConstants.SALT_OFFSET, salt.size)
+            System.arraycopy(encryptedHeader, 0, fullHeader, VolumeConstants.ENCRYPTED_DATA_OFFSET, encryptedHeader.size)
+            
+            return fullHeader
+        } finally {
+            headerKey.fill(0)
+            masterKey.fill(0)
+            headerData.fill(0)
+            xts.close()
+        }
     }
 }
 
@@ -385,4 +408,8 @@ data class VolumeHeaderData(
     
     val isNonSystemInPlaceEncrypted: Boolean
         get() = (flags and 0x2) != 0
+    
+    /** Override to prevent auto-generated toString() from leaking masterKey bytes */
+    override fun toString(): String =
+        "VolumeHeaderData(algo=$encryptionAlgorithm, hash=$hashAlgorithm, size=$volumeSize)"
 }

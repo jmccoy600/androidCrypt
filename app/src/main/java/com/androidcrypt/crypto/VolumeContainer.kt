@@ -16,9 +16,14 @@ class VolumeContainer(private val file: File) {
     /**
      * Open and decrypt an existing volume container
      */
-    fun open(password: String, pim: Int = 0): Boolean {
+    fun open(password: CharArray, pim: Int = 0): Boolean {
         if (!file.exists()) {
-            throw IllegalArgumentException("Container file does not exist: ${file.absolutePath}")
+            throw IllegalArgumentException("Container file does not exist")
+        }
+        
+        // If already open, close first to prevent key material leak
+        if (masterKey != null || xtsMode != null) {
+            close()
         }
         
         RandomAccessFile(file, "r").use { raf ->
@@ -44,7 +49,7 @@ class VolumeContainer(private val file: File) {
      * Create a new encrypted volume container
      */
     fun create(
-        password: String,
+        password: CharArray,
         sizeBytes: Long,
         pim: Int = 0,
         encryptionAlg: EncryptionAlgorithm = EncryptionAlgorithm.AES,
@@ -84,17 +89,23 @@ class VolumeContainer(private val file: File) {
             raf.write(header)
             raf.write(padding)
             
-            // Initialize data area with random data (or zeros for quick format)
-            // For production, you might want to fill with random data for security
+            // Initialize data area with cryptographically random data.
+            // This is essential for security: without random fill, an attacker can
+            // determine how much real data has been written by examining ciphertext
+            // patterns (zero-encrypted sectors are distinguishable from data sectors
+            // in XTS mode).
             val blockSize = 1024 * 1024 // 1MB blocks
-            val zeroBlock = ByteArray(blockSize)
+            val randomBlock = ByteArray(blockSize)
+            val secureRandom = java.security.SecureRandom()
             
             var remaining = dataAreaSize
             while (remaining > 0) {
                 val toWrite = minOf(remaining, blockSize.toLong()).toInt()
-                raf.write(zeroBlock, 0, toWrite)
+                secureRandom.nextBytes(randomBlock)
+                raf.write(randomBlock, 0, toWrite)
                 remaining -= toWrite
             }
+            randomBlock.fill(0)  // Zero the buffer
         }
         
         // Open the newly created volume
@@ -194,7 +205,9 @@ class VolumeContainer(private val file: File) {
     fun close() {
         masterKey?.fill(0)
         masterKey = null
+        xtsMode?.close()  // Release native XTS context (zeros key schedules)
         xtsMode = null
+        headerData?.masterKey?.fill(0)  // Zero the header's copy of masterKey
         headerData = null
     }
     
@@ -215,4 +228,7 @@ data class VolumeInfo(
     val sectorSize: Int,
     val creationTime: Long,
     val isSystemEncrypted: Boolean
-)
+) {
+    /** Override to prevent auto-generated toString() from leaking crypto parameters */
+    override fun toString(): String = "VolumeInfo(size=${sizeBytes / (1024*1024)}MB)"
+}

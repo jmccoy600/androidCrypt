@@ -40,7 +40,7 @@ class VolumeCreator {
          */
         fun createContainer(
             containerPath: String,
-            password: String,
+            password: CharArray,
             sizeInMB: Long,
             pim: Int = 0,
             keyfileUris: List<Uri> = emptyList(),
@@ -61,18 +61,15 @@ class VolumeCreator {
                     return Result.failure(Exception("Container size must be at least 1 MB"))
                 }
                 
-                Log.d(TAG, "Creating container: $containerPath, size: ${sizeInMB}MB")
-                
                 // Apply keyfiles to password if any
                 val passwordBytes: ByteArray = if (keyfileUris.isNotEmpty() && context != null) {
-                    Log.d(TAG, "Applying ${keyfileUris.size} keyfile(s)...")
                     val result = KeyfileProcessor.applyKeyfilesFromUris(password, keyfileUris, context)
                     if (result.isFailure) {
                         return Result.failure(result.exceptionOrNull() ?: Exception("Failed to process keyfiles"))
                     }
                     result.getOrThrow()
                 } else {
-                    password.toByteArray(Charsets.UTF_8)
+                    charArrayToUtf8Bytes(password)
                 }
                 
                 // Calculate total size
@@ -86,8 +83,6 @@ class VolumeCreator {
                     // Generate random salt for key derivation
                     val salt = ByteArray(SALT_SIZE)
                     SecureRandom().nextBytes(salt)
-                    
-                    Log.d(TAG, "Deriving key from password...")
                     
                     // Derive encryption key from password using PBKDF2-HMAC-SHA512
                     val iterations = if (pim > 0) {
@@ -109,34 +104,38 @@ class VolumeCreator {
                     val masterKey = ByteArray(algorithm.keySize)
                     SecureRandom().nextBytes(masterKey)
                     
-                    // Create volume header
-                    val headerBytes = createVolumeHeader(salt, derivedKey, masterKey, totalBytes, algorithm)
-                    
-                    // Write primary header at offset 0 (salt + encrypted header = 512 bytes)
-                    raf.seek(0)
-                    raf.write(headerBytes)
-                    
-                    // Write backup header at end of file - 128KB
-                    // VeraCrypt layout: backup header at (dataAreaSize + TC_VOLUME_HEADER_GROUP_SIZE) 
-                    // = (totalBytes - 256KB) + 128KB = totalBytes - 128KB
-                    val backupHeaderOffset = totalBytes - DATA_AREA_OFFSET
-                    raf.seek(backupHeaderOffset)
-                    raf.write(headerBytes)
-                    
-                    Log.d(TAG, "Primary header at offset 0, backup header at offset $backupHeaderOffset")
-                    
-                    // Format the data area with FAT32 file system
-                    formatFAT32(raf, masterKey, totalBytes, algorithm)
-                    
-                    Log.d(TAG, "FAT32 file system created")
+                    try {
+                        // Create volume header
+                        val headerBytes = createVolumeHeader(salt, derivedKey, masterKey, totalBytes, algorithm)
+                        
+                        // Write primary header at offset 0 (salt + encrypted header = 512 bytes)
+                        raf.seek(0)
+                        raf.write(headerBytes)
+                        
+                        // Write backup header at end of file - 128KB
+                        // VeraCrypt layout: backup header at (dataAreaSize + TC_VOLUME_HEADER_GROUP_SIZE) 
+                        // = (totalBytes - 256KB) + 128KB = totalBytes - 128KB
+                        val backupHeaderOffset = totalBytes - DATA_AREA_OFFSET
+                        raf.seek(backupHeaderOffset)
+                        raf.write(headerBytes)
+                        
+                        // Format the data area with FAT32 file system
+                        formatFAT32(raf, masterKey, totalBytes, algorithm)
+                        
+                    } finally {
+                        // Securely zero all key material
+                        passwordBytes.fill(0)
+                        derivedKey.fill(0)
+                        masterKey.fill(0)
+                    }
                 }
                 
-                Log.d(TAG, "Container created successfully")
-                Result.success("Container created successfully at $containerPath")
+                Result.success("Container created successfully")
                 
             } catch (e: Exception) {
-                Log.e(TAG, "Error creating container", e)
                 Result.failure(e)
+            } finally {
+                password.fill('\u0000')  // Always zero password CharArray
             }
         }
         
@@ -382,6 +381,7 @@ class VolumeCreator {
             
             // Encrypt and write boot sector
             val xts = XTSMode(masterKey, algorithm)
+            try {
             val encryptedBootSector = xts.encrypt(bootSector, startSector)
             raf.seek(DATA_AREA_OFFSET)
             raf.write(encryptedBootSector)
@@ -506,6 +506,9 @@ class VolumeCreator {
             }
             
             Log.d(TAG, "Progress: ${totalBytes / (1024 * 1024)}MB / ${totalBytes / (1024 * 1024)}MB")
+            } finally {
+                xts.close()
+            }
         }
         
         private fun writeLong(buffer: ByteArray, offset: Int, value: Long) {
@@ -540,7 +543,7 @@ class VolumeCreator {
          *   - Hidden data offset = hostSize - TC_VOLUME_HEADER_GROUP_SIZE - hiddenVolumeSize
          *   - The hidden backup header is at (end - TC_HIDDEN_VOLUME_HEADER_OFFSET)
          *
-         * Plausible deniability: The outer volume password reveals only the outer FAT32 FS.
+         * The outer volume password reveals only the outer FAT32 FS.
          * The hidden volume password reveals the hidden FAT32 FS. Without the hidden password,
          * there is no way to prove the hidden volume exists — the header and data areas are
          * filled with cryptographically random data.
@@ -556,8 +559,8 @@ class VolumeCreator {
          */
         fun createHiddenVolume(
             containerPath: String,
-            outerPassword: String,
-            hiddenPassword: String,
+            outerPassword: CharArray,
+            hiddenPassword: CharArray,
             hiddenSizeInMB: Long,
             pim: Int = 0,
             keyfileUris: List<Uri> = emptyList(),
@@ -597,8 +600,6 @@ class VolumeCreator {
                     ))
                 }
                 
-                Log.d(TAG, "Creating hidden volume: ${hiddenSizeInMB}MB inside $containerPath (host: ${hostSize / (1024*1024)}MB)")
-                
                 // Apply keyfiles to password if any
                 val passwordBytes: ByteArray = if (keyfileUris.isNotEmpty() && context != null) {
                     val result = KeyfileProcessor.applyKeyfilesFromUris(hiddenPassword, keyfileUris, context)
@@ -607,7 +608,7 @@ class VolumeCreator {
                     }
                     result.getOrThrow()
                 } else {
-                    hiddenPassword.toByteArray(Charsets.UTF_8)
+                    charArrayToUtf8Bytes(hiddenPassword)
                 }
                 
                 // Derive key from hidden password
@@ -627,45 +628,50 @@ class VolumeCreator {
                 val masterKey = ByteArray(algorithm.keySize)
                 SecureRandom().nextBytes(masterKey)
                 
-                // Hidden volume data area sits at the END of the outer volume, before the backup headers.
-                // From VeraCrypt Format.c:
-                //   dataOffset = hiddenVolHostSize - TC_VOLUME_HEADER_GROUP_SIZE - hiddenVolumeSize
-                // where hiddenVolHostSize = total file size
-                val hiddenDataOffset = hostSize - DATA_AREA_OFFSET - hiddenBytes
-                
-                // Hidden volume data area size = hiddenBytes - reservedSize
-                // (the reserved area prevents outer FS from overwriting the hidden volume end)
-                val hiddenDataAreaSize = hiddenBytes - reservedSize
-                
-                // Create the hidden volume header (same format as normal, but hiddenVolumeSize field
-                // is set to the data area size, and dataOffset/encryptedAreaStart point to the hidden area)
-                val headerBytes = createHiddenVolumeHeader(
-                    salt, derivedKey, masterKey, hiddenDataAreaSize, hiddenDataOffset, algorithm
-                )
-                
-                RandomAccessFile(containerFile, "rw").use { raf ->
-                    // Write hidden header at offset TC_HIDDEN_VOLUME_HEADER_OFFSET (64KB)
-                    raf.seek(VOLUME_HEADER_SIZE)
-                    raf.write(headerBytes)
+                try {
+                    // Hidden volume data area sits at the END of the outer volume, before the backup headers.
+                    // From VeraCrypt Format.c:
+                    //   dataOffset = hiddenVolHostSize - TC_VOLUME_HEADER_GROUP_SIZE - hiddenVolumeSize
+                    // where hiddenVolHostSize = total file size
+                    val hiddenDataOffset = hostSize - DATA_AREA_OFFSET - hiddenBytes
                     
-                    // Write backup hidden header at (end - TC_HIDDEN_VOLUME_HEADER_OFFSET) = end - 64KB
-                    val backupHiddenOffset = hostSize - VOLUME_HEADER_SIZE
-                    raf.seek(backupHiddenOffset)
-                    raf.write(headerBytes)
+                    // Hidden volume data area size = hiddenBytes - reservedSize
+                    // (the reserved area prevents outer FS from overwriting the hidden volume end)
+                    val hiddenDataAreaSize = hiddenBytes - reservedSize
                     
-                    Log.d(TAG, "Hidden header at offset $VOLUME_HEADER_SIZE, backup at $backupHiddenOffset")
-                    Log.d(TAG, "Hidden data area at offset $hiddenDataOffset, size: $hiddenDataAreaSize")
+                    // Create the hidden volume header (same format as normal, but hiddenVolumeSize field
+                    // is set to the data area size, and dataOffset/encryptedAreaStart point to the hidden area)
+                    val headerBytes = createHiddenVolumeHeader(
+                        salt, derivedKey, masterKey, hiddenDataAreaSize, hiddenDataOffset, algorithm
+                    )
                     
-                    // Format the hidden data area with FAT32
-                    formatHiddenFAT32(raf, masterKey, hiddenDataOffset, hiddenDataAreaSize, algorithm)
+                    RandomAccessFile(containerFile, "rw").use { raf ->
+                        // Write hidden header at offset TC_HIDDEN_VOLUME_HEADER_OFFSET (64KB)
+                        raf.seek(VOLUME_HEADER_SIZE)
+                        raf.write(headerBytes)
+                        
+                        // Write backup hidden header at (end - TC_HIDDEN_VOLUME_HEADER_OFFSET) = end - 64KB
+                        val backupHiddenOffset = hostSize - VOLUME_HEADER_SIZE
+                        raf.seek(backupHiddenOffset)
+                        raf.write(headerBytes)
+                        
+                        // Format the hidden data area with FAT32
+                        formatHiddenFAT32(raf, masterKey, hiddenDataOffset, hiddenDataAreaSize, algorithm)
+                    }
+                } finally {
+                    // Securely zero all key material
+                    passwordBytes.fill(0)
+                    derivedKey.fill(0)
+                    masterKey.fill(0)
                 }
                 
-                Log.d(TAG, "Hidden volume created successfully")
-                Result.success("Hidden volume created (${hiddenSizeInMB}MB) with plausible deniability")
+                Result.success("Hidden volume created successfully")
                 
             } catch (e: Exception) {
-                Log.e(TAG, "Error creating hidden volume", e)
                 Result.failure(e)
+            } finally {
+                outerPassword.fill('\u0000')  // Always zero password CharArrays
+                hiddenPassword.fill('\u0000')
             }
         }
         

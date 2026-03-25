@@ -874,11 +874,17 @@ Java_com_androidcrypt_crypto_NativeXTS_decryptSectors(
     auto* ctx = reinterpret_cast<XTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -902,11 +908,17 @@ Java_com_androidcrypt_crypto_NativeXTS_encryptSectors(
     auto* ctx = reinterpret_cast<XTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1164,11 +1176,17 @@ Java_com_androidcrypt_crypto_NativeSerpentXTS_decryptSectors(
     auto* ctx = reinterpret_cast<SerpentXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1185,11 +1203,17 @@ Java_com_androidcrypt_crypto_NativeSerpentXTS_encryptSectors(
     auto* ctx = reinterpret_cast<SerpentXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1431,11 +1455,17 @@ Java_com_androidcrypt_crypto_NativeTwofishXTS_decryptSectors(
     auto* ctx = reinterpret_cast<TwofishXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1452,11 +1482,17 @@ Java_com_androidcrypt_crypto_NativeTwofishXTS_encryptSectors(
     auto* ctx = reinterpret_cast<TwofishXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1605,11 +1641,17 @@ Java_com_androidcrypt_crypto_NativeCascadeXTS_decryptSectors(
     auto* ctx = reinterpret_cast<CascadeXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1626,11 +1668,17 @@ Java_com_androidcrypt_crypto_NativeCascadeXTS_encryptSectors(
     auto* ctx = reinterpret_cast<CascadeXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1766,11 +1814,17 @@ Java_com_androidcrypt_crypto_NativeCascadeSTA_1XTS_decryptSectors(
     auto* ctx = reinterpret_cast<CascadeXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 
@@ -1787,11 +1841,17 @@ Java_com_androidcrypt_crypto_NativeCascadeSTA_1XTS_encryptSectors(
     auto* ctx = reinterpret_cast<CascadeXTSContext*>(handle);
     if (!ctx || sectorCount <= 0 || sectorSize < 16) return;
 
+    const jint arrayLen = env->GetArrayLength(data);
+
     auto* ptr = static_cast<uint8_t*>(
         env->GetPrimitiveArrayCritical(data, nullptr));
     if (!ptr) return;
 
     const uint64_t totalLength = (uint64_t)sectorSize * sectorCount;
+    if (startOffset < 0 || (uint64_t)startOffset + totalLength > (uint64_t)arrayLen) {
+        env->ReleasePrimitiveArrayCritical(data, ptr, 0);
+        return;
+    }
     const uint64_t startDataUnitNo =
         (uint64_t)startSectorNo * sectorSize / ENCRYPTION_DATA_UNIT_SIZE;
 

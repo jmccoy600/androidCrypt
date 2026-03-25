@@ -161,7 +161,7 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
 
     init {
         require(key.size == algorithm.keySize) {
-            "Key size must be ${algorithm.keySize} bytes for ${algorithm.algorithmName} XTS mode, got ${key.size}"
+            "Invalid key size for XTS mode"
         }
         val halfKeySize = key.size / 2
         key1 = key.copyOfRange(0, halfKeySize)
@@ -175,8 +175,11 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
         }
     }
 
-    /** Release the native XTS context. Safe to call multiple times. */
+    /** Release the native XTS context and zero JVM-side key material. Safe to call multiple times. */
     fun close() {
+        // Zero JVM-side key copies first
+        key1.fill(0)
+        key2.fill(0)
         val h = nativeHandle
         if (h != 0L) {
             nativeHandle = 0L
@@ -189,10 +192,6 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
             }
         }
     }
-
-    protected fun finalize() {
-        close()
-    }
     
     /**
      * Encrypt data using XTS mode
@@ -202,7 +201,7 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
      */
     fun encrypt(data: ByteArray, dataUnitNo: Long, startOffset: Long = 0): ByteArray {
         require(data.size % algorithm.blockSize == 0) {
-            "Data size must be multiple of block size (${algorithm.blockSize})"
+            "Data size must be aligned to block size"
         }
         val result = data.copyOf()
         val tweakSector = dataUnitNo + (startOffset / algorithm.blockSize)
@@ -226,7 +225,7 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
      */
     fun decrypt(data: ByteArray, dataUnitNo: Long, startOffset: Long = 0): ByteArray {
         require(data.size % algorithm.blockSize == 0) {
-            "Data size must be multiple of block size (${algorithm.blockSize})"
+            "Data size must be aligned to block size"
         }
         val result = data.copyOf()
         val tweakSector = dataUnitNo + (startOffset / algorithm.blockSize)
@@ -252,7 +251,7 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
      */
     fun decryptSectorThreadSafe(data: ByteArray, dataUnitNo: Long): ByteArray {
         require(data.size % algorithm.blockSize == 0) {
-            "Data size must be multiple of block size (${algorithm.blockSize})"
+            "Data size must be aligned to block size"
         }
         val result = data.copyOf()
         when (algorithm) {
@@ -276,7 +275,7 @@ class XTSMode(private val key: ByteArray, private val algorithm: EncryptionAlgor
      */
     fun encryptSectorThreadSafe(data: ByteArray, dataUnitNo: Long): ByteArray {
         require(data.size % algorithm.blockSize == 0) {
-            "Data size must be multiple of block size (${algorithm.blockSize})"
+            "Data size must be aligned to block size"
         }
         val result = data.copyOf()
         when (algorithm) {

@@ -61,8 +61,10 @@ class VolumeReader(
     }
     
     fun logTiming(tag: String) {
-        val t = getTiming()
-        Log.d("VolumeReader", "$tag: I/O=${t[0]}ms (${t[2].toInt()} calls), Decrypt=${t[1]}ms")
+        if (DEBUG_LOGGING) {
+            val t = getTiming()
+            Log.d("VolumeReader", "$tag: I/O=${t[0]}ms (${t[2].toInt()} calls), Decrypt=${t[1]}ms")
+        }
         resetTiming()
     }
     
@@ -96,11 +98,11 @@ class VolumeReader(
      *   the hidden volume header to determine its boundaries and protect those sectors from writes.
      */
     fun mount(
-        password: String,
+        password: CharArray,
         pim: Int = 0,
         keyfileUris: List<Uri> = emptyList(),
         useHiddenVolume: Boolean = false,
-        hiddenVolumeProtectionPassword: String? = null
+        hiddenVolumeProtectionPassword: CharArray? = null
     ): Result<MountedVolumeInfo> {
         return try {
             // Handle content URI or file path
@@ -113,11 +115,14 @@ class VolumeReader(
             Log.e(TAG, "Error mounting container", e)
             unmount()
             Result.failure(e)
+        } finally {
+            password.fill('\u0000')  // Always zero password CharArrays
+            hiddenVolumeProtectionPassword?.fill('\u0000')
         }
     }
     
-    private fun mountFromUri(password: String, pim: Int, keyfileUris: List<Uri>,
-                              useHiddenVolume: Boolean, hiddenVolumeProtectionPassword: String?): Result<MountedVolumeInfo> {
+    private fun mountFromUri(password: CharArray, pim: Int, keyfileUris: List<Uri>,
+                              useHiddenVolume: Boolean, hiddenVolumeProtectionPassword: CharArray?): Result<MountedVolumeInfo> {
         val ctx = context ?: return Result.failure(Exception("Context is null"))
         val uri = containerUri ?: return Result.failure(Exception("URI is null"))
         
@@ -149,8 +154,8 @@ class VolumeReader(
         return finishMount(headerBytes, password, pim, keyfileUris, ctx, useHiddenVolume, hiddenVolumeProtectionPassword)
     }
     
-    private fun mountFromPath(password: String, pim: Int, keyfileUris: List<Uri>,
-                               useHiddenVolume: Boolean, hiddenVolumeProtectionPassword: String?): Result<MountedVolumeInfo> {
+    private fun mountFromPath(password: CharArray, pim: Int, keyfileUris: List<Uri>,
+                               useHiddenVolume: Boolean, hiddenVolumeProtectionPassword: CharArray?): Result<MountedVolumeInfo> {
         val file = File(containerPath)
         if (!file.exists()) {
             return Result.failure(Exception("Container file does not exist"))
@@ -172,12 +177,12 @@ class VolumeReader(
     
     private fun finishMount(
         fullHeader: ByteArray, 
-        password: String, 
+        password: CharArray, 
         pim: Int,
         keyfileUris: List<Uri>,
         ctx: Context?,
         useHiddenVolume: Boolean = false,
-        hiddenVolumeProtectionPassword: String? = null
+        hiddenVolumeProtectionPassword: CharArray? = null
     ): Result<MountedVolumeInfo> {
         // Apply keyfiles to password if any
         val passwordBytes: ByteArray = if (keyfileUris.isNotEmpty() && ctx != null) {
@@ -188,7 +193,7 @@ class VolumeReader(
             }
             result.getOrThrow()
         } else {
-            password.toByteArray(Charsets.UTF_8)
+            charArrayToUtf8Bytes(password)
         }
         
         if (DEBUG_LOGGING) Log.d(TAG, "Deriving key from password...")
@@ -220,8 +225,7 @@ class VolumeReader(
         // When a password is supplied, VeraCrypt tries BOTH header positions.
         // If the normal header decrypts -> normal volume.
         // If the hidden header decrypts -> hidden volume.
-        // This is the basis of plausible deniability: an adversary cannot tell
-        // which header (if any) the password unlocks.
+        // An adversary cannot tell which header (if any) the password unlocks.
         
         // Build list of (headerOffset, isHidden) to try
         // VeraCrypt tries hidden header at offset 64KB within the volume file
@@ -232,7 +236,7 @@ class VolumeReader(
                 Pair(0, false)
             )
         } else {
-            // Normal mode — try normal first, then hidden (plausible deniability: password
+            // Normal mode — try normal first, then hidden (password
             // might unlock either one; VeraCrypt always tries both)
             listOf(
                 Pair(0, false),
@@ -275,11 +279,18 @@ class VolumeReader(
                     decryptedHeader = candidate
                     matchedAlgorithm = algo
                     isHiddenVolume = hidden
+                    algoKey.fill(0)
                     break
                 }
+                algoKey.fill(0)  // Zero failed attempt key
             }
+            dk.fill(0)  // Zero derived key after trying all algorithms
             if (decryptedHeader != null) break
         }
+        
+        // Zero password bytes — no longer needed
+        passwordBytes.fill(0)
+        derivedKey.fill(0)
         
         if (decryptedHeader == null || matchedAlgorithm == null) {
             Log.e(TAG, "Header validation failed - no algorithm produced valid magic bytes")
@@ -298,6 +309,9 @@ class VolumeReader(
         // Extract master key from decrypted header
         masterKey = decryptedHeader.copyOfRange(192, 192 + matchedAlgorithm.keySize)
         
+        // Zero decrypted header — master key has been extracted
+        decryptedHeader.fill(0)
+        
         // Cache XTS mode instance and algorithm for performance
         encryptionAlgorithm = matchedAlgorithm
         xtsMode = XTSMode(masterKey!!, encryptionAlgorithm)
@@ -314,7 +328,7 @@ class VolumeReader(
                 fullHeader, hiddenVolumeProtectionPassword, pim, ctx
             )
             if (outerVolumeProtectedSize > 0) {
-                Log.d(TAG, "Hidden volume protection enabled: protecting last $outerVolumeProtectedSize bytes of data area")
+                if (DEBUG_LOGGING) Log.d(TAG, "Hidden volume protection enabled")
             }
         }
         
@@ -340,7 +354,7 @@ class VolumeReader(
      */
     private fun resolveHiddenVolumeProtection(
         fullHeader: ByteArray,
-        hiddenPassword: String,
+        hiddenPassword: CharArray,
         pim: Int,
         ctx: Context?
     ): Long {
@@ -355,7 +369,7 @@ class VolumeReader(
         
         val iterations = if (pim > 0) 15000 + (pim * 1000) else 500000
         val maxDkLen = EncryptionAlgorithm.entries.maxOf { it.keySize }
-        val passwordBytes = hiddenPassword.toByteArray(Charsets.UTF_8)
+        val passwordBytes = charArrayToUtf8Bytes(hiddenPassword)
         
         val dk = PBKDF2.deriveKey(
             password = passwordBytes,
@@ -365,19 +379,28 @@ class VolumeReader(
             dkLen = maxDkLen
         )
         
-        for (algo in EncryptionAlgorithm.entries) {
-            val algoKey = dk.copyOfRange(0, algo.keySize)
-            val candidate = decryptHeader(encryptedData, algoKey, algo)
-            if (candidate[0] == 'V'.code.toByte() &&
-                candidate[1] == 'E'.code.toByte() &&
-                candidate[2] == 'R'.code.toByte() &&
-                candidate[3] == 'A'.code.toByte()) {
-                // Successfully decrypted hidden header — extract its data area size
-                val protectedSize = readLong(candidate, 52)  // EncryptedAreaLength of hidden volume
-                return protectedSize
+        try {
+            for (algo in EncryptionAlgorithm.entries) {
+                val algoKey = dk.copyOfRange(0, algo.keySize)
+                val candidate = decryptHeader(encryptedData, algoKey, algo)
+                if (candidate[0] == 'V'.code.toByte() &&
+                    candidate[1] == 'E'.code.toByte() &&
+                    candidate[2] == 'R'.code.toByte() &&
+                    candidate[3] == 'A'.code.toByte()) {
+                    // Successfully decrypted hidden header — extract its data area size
+                    val protectedSize = readLong(candidate, 52)  // EncryptedAreaLength of hidden volume
+                    candidate.fill(0)
+                    algoKey.fill(0)
+                    return protectedSize
+                }
+                algoKey.fill(0)
             }
+            return 0
+        } finally {
+            // Always zero sensitive material
+            passwordBytes.fill(0)
+            dk.fill(0)
         }
-        return 0
     }
     
     /**
@@ -886,11 +909,13 @@ class VolumeReader(
             volumeFile = null
             parcelFd?.close()
             parcelFd = null
+            masterKey?.fill(0)  // Securely zero master key before releasing
             masterKey = null
-            xtsMode?.close()  // Release native XTS context
+            xtsMode?.close()  // Release native XTS context (zeros key schedules)
             xtsMode = null
             volumeInfo = null
-            // Note: Don't shutdown executor as it may be reused
+            // Shutdown executor to release threads that may hold references to key material
+            encryptionExecutor.shutdownNow()
             Log.d(TAG, "Volume unmounted")
         } catch (e: Exception) {
             Log.e(TAG, "Error unmounting volume", e)
@@ -946,4 +971,8 @@ data class MountedVolumeInfo(
     val outerVolumeProtectedSize: Long = 0  // when mounting outer with hidden-vol protection
 ) {
     fun getDataAreaSizeMB(): Long = dataAreaSize / (1024 * 1024)
+    
+    /** Override to prevent auto-generated toString() from leaking path and offsets */
+    override fun toString(): String =
+        "MountedVolumeInfo(mounted=$isMounted, sizeMB=${getDataAreaSizeMB()})"
 }

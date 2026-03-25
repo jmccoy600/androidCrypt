@@ -2,7 +2,6 @@ package com.androidcrypt.crypto
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
@@ -18,8 +17,6 @@ import java.io.InputStream
  * 3. Mix the pool into the password by addition (mod 256)
  */
 object KeyfileProcessor {
-    
-    private const val TAG = "KeyfileProcessor"
     
     // Constants matching VeraCrypt
     private const val KEYFILE_POOL_LEGACY_SIZE = 64  // For passwords <= 64 chars
@@ -111,17 +108,17 @@ object KeyfileProcessor {
      * @return The password bytes with keyfiles applied
      */
     fun applyKeyfiles(
-        password: String,
+        password: CharArray,
         keyfiles: List<String>,
         context: Context? = null
     ): Result<ByteArray> {
         return try {
             if (keyfiles.isEmpty()) {
                 // No keyfiles, just return password bytes
-                return Result.success(password.toByteArray(Charsets.UTF_8))
+                return Result.success(charArrayToUtf8Bytes(password))
             }
             
-            val passwordBytes = password.toByteArray(Charsets.UTF_8)
+            val passwordBytes = charArrayToUtf8Bytes(password)
             
             // Determine pool size based on password length (VeraCrypt behavior)
             val keyPoolSize = if (passwordBytes.size <= 64) {
@@ -133,13 +130,12 @@ object KeyfileProcessor {
             // Initialize keyfile pool to zeros
             val keyPool = ByteArray(keyPoolSize)
             
-            Log.d(TAG, "Processing ${keyfiles.size} keyfile(s), pool size: $keyPoolSize")
-            
             // Process each keyfile
             for (keyfilePath in keyfiles) {
                 val result = processKeyfile(keyfilePath, keyPool, keyPoolSize, context)
                 if (result.isFailure) {
-                    Log.e(TAG, "Failed to process keyfile: $keyfilePath", result.exceptionOrNull())
+                    passwordBytes.fill(0)
+                    keyPool.fill(0)
                     return Result.failure(result.exceptionOrNull() ?: Exception("Failed to process keyfile"))
                 }
             }
@@ -155,11 +151,12 @@ object KeyfileProcessor {
                 result[i] = ((passwordByte + poolByte) and 0xFF).toByte()
             }
             
-            Log.d(TAG, "Keyfiles applied, result length: ${result.size}")
+            // Zero sensitive intermediate buffers
+            passwordBytes.fill(0)
+            keyPool.fill(0)
             
             Result.success(result)
         } catch (e: Exception) {
-            Log.e(TAG, "Error applying keyfiles", e)
             Result.failure(e)
         }
     }
@@ -168,16 +165,16 @@ object KeyfileProcessor {
      * Process keyfiles from URIs (for Android SAF compatibility)
      */
     fun applyKeyfilesFromUris(
-        password: String,
+        password: CharArray,
         keyfileUris: List<Uri>,
         context: Context
     ): Result<ByteArray> {
         return try {
             if (keyfileUris.isEmpty()) {
-                return Result.success(password.toByteArray(Charsets.UTF_8))
+                return Result.success(charArrayToUtf8Bytes(password))
             }
             
-            val passwordBytes = password.toByteArray(Charsets.UTF_8)
+            val passwordBytes = charArrayToUtf8Bytes(password)
             
             val keyPoolSize = if (passwordBytes.size <= 64) {
                 KEYFILE_POOL_LEGACY_SIZE
@@ -187,12 +184,11 @@ object KeyfileProcessor {
             
             val keyPool = ByteArray(keyPoolSize)
             
-            Log.d(TAG, "Processing ${keyfileUris.size} keyfile URI(s), pool size: $keyPoolSize")
-            
             for (uri in keyfileUris) {
                 val result = processKeyfileFromUri(uri, keyPool, keyPoolSize, context)
                 if (result.isFailure) {
-                    Log.e(TAG, "Failed to process keyfile URI: $uri", result.exceptionOrNull())
+                    passwordBytes.fill(0)
+                    keyPool.fill(0)
                     return Result.failure(result.exceptionOrNull() ?: Exception("Failed to process keyfile"))
                 }
             }
@@ -206,9 +202,12 @@ object KeyfileProcessor {
                 result[i] = ((passwordByte + poolByte) and 0xFF).toByte()
             }
             
+            // Zero sensitive intermediate buffers
+            passwordBytes.fill(0)
+            keyPool.fill(0)
+            
             Result.success(result)
         } catch (e: Exception) {
-            Log.e(TAG, "Error applying keyfiles from URIs", e)
             Result.failure(e)
         }
     }
@@ -280,6 +279,7 @@ object KeyfileProcessor {
             var totalRead = 0L
             val buffer = ByteArray(64 * 1024)  // 64KB read buffer
             
+            try {
             while (totalRead < KEYFILE_MAX_READ_LEN) {
                 val bytesToRead = minOf(buffer.size, (KEYFILE_MAX_READ_LEN - totalRead).toInt())
                 val bytesRead = stream.read(buffer, 0, bytesToRead)
@@ -312,6 +312,9 @@ object KeyfileProcessor {
                     
                     totalRead++
                 }
+            }
+            } finally {
+                buffer.fill(0)  // Zero keyfile data read buffer
             }
             
         }

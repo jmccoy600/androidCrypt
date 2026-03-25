@@ -664,6 +664,11 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 return Result.success(ByteArray(0))
             }
             
+            // Validate file size fits in a ByteArray (max ~2GB)
+            if (actualFileSize > Int.MAX_VALUE) {
+                return Result.failure(Exception("File too large to read into memory (${actualFileSize / (1024*1024)} MB). Use streaming read instead."))
+            }
+            
             // Pre-build entire cluster chain for efficient batch reading
             val clusterChain = mutableListOf<Int>()
             var currentCluster = fileFirstCluster
@@ -1488,7 +1493,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 val newFirstCluster = clusters[0]
                 java.nio.ByteBuffer.wrap(clusterData, dirEntryOffset + 26, 2).order(java.nio.ByteOrder.LITTLE_ENDIAN).putShort((newFirstCluster and 0xFFFF).toShort())
                 java.nio.ByteBuffer.wrap(clusterData, dirEntryOffset + 20, 2).order(java.nio.ByteOrder.LITTLE_ENDIAN).putShort((newFirstCluster shr 16).toShort())
-                java.nio.ByteBuffer.wrap(clusterData, dirEntryOffset + 28, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(fileSize.toInt())
+                java.nio.ByteBuffer.wrap(clusterData, dirEntryOffset + 28, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt((fileSize and 0xFFFFFFFFL).toInt())
                 
                 // Write back modified directory
                 volumeReader.writeSectors(firstSectorOfCluster, clusterData).getOrThrow()
@@ -1798,7 +1803,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 java.nio.ByteBuffer.wrap(clusterData, offset + 20, 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                     .putShort((newFirstCluster shr 16).toShort())
                 java.nio.ByteBuffer.wrap(clusterData, offset + 28, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    .putInt(totalBytesWritten.toInt())
+                    .putInt((totalBytesWritten and 0xFFFFFFFFL).toInt())
                 
                 // Write back modified directory cluster
                 volumeReader.writeSectors(dirEntry.dirSector, clusterData).getOrThrow()
@@ -2545,7 +2550,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 if (entryName.equals(fileName, ignoreCase = true)) {
                     ByteBuffer.wrap(clusterData, offset + 26, 2).order(ByteOrder.LITTLE_ENDIAN).putShort((firstCluster and 0xFFFF).toShort())
                     ByteBuffer.wrap(clusterData, offset + 20, 2).order(ByteOrder.LITTLE_ENDIAN).putShort((firstCluster shr 16).toShort())
-                    ByteBuffer.wrap(clusterData, offset + 28, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(fileSize.toInt())
+                    ByteBuffer.wrap(clusterData, offset + 28, 4).order(ByteOrder.LITTLE_ENDIAN).putInt((fileSize and 0xFFFFFFFFL).toInt())
                     volumeReader.writeSectors(firstSectorOfCluster, clusterData).getOrThrow()
                     return
                 }

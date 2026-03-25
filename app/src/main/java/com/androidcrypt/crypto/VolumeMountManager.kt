@@ -12,14 +12,15 @@ import com.androidcrypt.app.VolumeForegroundService
 object VolumeMountManager {
     private const val TAG = "VolumeMountManager"
     private const val DOCUMENTS_AUTHORITY = "com.androidcrypt.documents"
-    private val mountedVolumes = mutableMapOf<String, VolumeReader>()
+    private val mountedVolumes = java.util.concurrent.ConcurrentHashMap<String, VolumeReader>()
     private val fileSystemReaders = mutableMapOf<String, FAT32Reader>()
     private val fsReaderLock = java.util.concurrent.locks.ReentrantLock()
     private var appContext: Context? = null
     
-    // Callbacks for mount/unmount events
-    private val mountCallbacks = mutableListOf<(String) -> Unit>()
-    private val unmountCallbacks = mutableListOf<(String) -> Unit>()
+    // Callbacks for mount/unmount events — CopyOnWriteArrayList is safe for
+    // concurrent iteration + modification (add during forEach won't throw)
+    private val mountCallbacks = java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>()
+    private val unmountCallbacks = java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>()
     
     /**
      * Register callback for volume mount events
@@ -50,11 +51,11 @@ object VolumeMountManager {
     fun mountVolumeFromUri(
         context: Context,
         uri: Uri,
-        password: String,
+        password: CharArray,
         pim: Int = 0,
         keyfileUris: List<Uri> = emptyList(),
         useHiddenVolume: Boolean = false,
-        hiddenVolumeProtectionPassword: String? = null
+        hiddenVolumeProtectionPassword: CharArray? = null
     ): Result<MountedVolumeInfo> {
         return try {
             val uriString = uri.toString()
@@ -106,10 +107,10 @@ object VolumeMountManager {
      */
     fun mountVolume(
         containerPath: String,
-        password: String,
+        password: CharArray,
         pim: Int = 0,
         useHiddenVolume: Boolean = false,
-        hiddenVolumeProtectionPassword: String? = null
+        hiddenVolumeProtectionPassword: CharArray? = null
     ): Result<MountedVolumeInfo> {
         return try {
             // Check if already mounted
@@ -271,7 +272,9 @@ object VolumeMountManager {
     }
     
     /**
-     * Read the first few sectors to inspect the file system
+     * Read the first few sectors to inspect the file system.
+     * Returns only structural metadata (OEM name, sector size, etc.),
+     * never raw hex dumps of decrypted data.
      */
     fun inspectFileSystem(containerPath: String): Result<String> {
         return try {
@@ -286,25 +289,18 @@ object VolumeMountManager {
             
             val firstSector = firstSectorResult.getOrThrow()
             val info = StringBuilder()
-            info.append("First sector data (512 bytes):\n")
-            info.append("Hex dump:\n")
+            info.append("File system inspection:\n")
             
-            // Show first 256 bytes in hex
-            for (i in 0 until minOf(256, firstSector.size)) {
-                if (i % 16 == 0) {
-                    info.append(String.format("\n%04X: ", i))
-                }
-                info.append(String.format("%02X ", firstSector[i]))
-            }
+            // Extract only structural metadata from FAT32 boot sector
+            val oemName = String(firstSector, 3, 8).trim()
+            val bytesPerSector = (firstSector[11].toInt() and 0xFF) or ((firstSector[12].toInt() and 0xFF) shl 8)
+            val sectorsPerCluster = firstSector[13].toInt() and 0xFF
+            val mediaDescriptor = firstSector[21].toInt() and 0xFF
             
-            info.append("\n\nASCII representation:\n")
-            for (i in 0 until minOf(256, firstSector.size)) {
-                if (i % 64 == 0) {
-                    info.append("\n")
-                }
-                val char = firstSector[i].toInt() and 0xFF
-                info.append(if (char in 32..126) char.toChar() else '.')
-            }
+            info.append("OEM Name: $oemName\n")
+            info.append("Bytes per sector: $bytesPerSector\n")
+            info.append("Sectors per cluster: $sectorsPerCluster\n")
+            info.append("Media descriptor: 0x${String.format("%02X", mediaDescriptor)}\n")
             
             Result.success(info.toString())
         } catch (e: Exception) {
