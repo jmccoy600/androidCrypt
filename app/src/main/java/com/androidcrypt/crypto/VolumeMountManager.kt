@@ -43,13 +43,18 @@ object VolumeMountManager {
      * @param password User password (can be empty if using keyfiles)
      * @param pim Personal Iterations Multiplier (0 for default)
      * @param keyfileUris List of keyfile URIs (optional)
+     * @param useHiddenVolume If true, prefer decrypting as a hidden volume
+     * @param hiddenVolumeProtectionPassword If non-null, mount outer volume with
+     *        hidden volume write protection using this password for the hidden header
      */
     fun mountVolumeFromUri(
         context: Context,
         uri: Uri,
         password: String,
         pim: Int = 0,
-        keyfileUris: List<Uri> = emptyList()
+        keyfileUris: List<Uri> = emptyList(),
+        useHiddenVolume: Boolean = false,
+        hiddenVolumeProtectionPassword: String? = null
     ): Result<MountedVolumeInfo> {
         return try {
             val uriString = uri.toString()
@@ -64,7 +69,7 @@ object VolumeMountManager {
                 context = context,
                 containerUri = uri
             )
-            val result = reader.mount(password, pim, keyfileUris)
+            val result = reader.mount(password, pim, keyfileUris, useHiddenVolume, hiddenVolumeProtectionPassword)
             
             if (result.isSuccess) {
                 mountedVolumes[uriString] = reader
@@ -102,7 +107,9 @@ object VolumeMountManager {
     fun mountVolume(
         containerPath: String,
         password: String,
-        pim: Int = 0
+        pim: Int = 0,
+        useHiddenVolume: Boolean = false,
+        hiddenVolumeProtectionPassword: String? = null
     ): Result<MountedVolumeInfo> {
         return try {
             // Check if already mounted
@@ -111,7 +118,7 @@ object VolumeMountManager {
             }
             
             val reader = VolumeReader(containerPath)
-            val result = reader.mount(password, pim)
+            val result = reader.mount(password, pim, useHiddenVolume = useHiddenVolume, hiddenVolumeProtectionPassword = hiddenVolumeProtectionPassword)
             
             if (result.isSuccess) {
                 mountedVolumes[containerPath] = reader

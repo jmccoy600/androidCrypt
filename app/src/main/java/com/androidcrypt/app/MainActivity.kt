@@ -177,6 +177,9 @@ fun OpenContainerScreen(onNavigateToTab: (Int) -> Unit = {}) {
     var keyfileUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var keyfileNames by remember { mutableStateOf<List<String>>(emptyList()) }
     var useKeyfiles by remember { mutableStateOf(false) }
+    var useHiddenVolume by remember { mutableStateOf(false) }
+    var useHiddenVolumeProtection by remember { mutableStateOf(false) }
+    var hiddenVolumeProtectionPassword by remember { mutableStateOf("") }
     
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -367,6 +370,72 @@ fun OpenContainerScreen(onNavigateToTab: (Int) -> Unit = {}) {
             }
         }
         
+        // Hidden volume section
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        
+        Text(
+            text = "Hidden Volume / Plausible Deniability",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = useHiddenVolume,
+                onCheckedChange = { 
+                    useHiddenVolume = it
+                    if (it) useHiddenVolumeProtection = false  // mutually exclusive
+                },
+                enabled = !isMounted
+            )
+            Text("Mount hidden volume (use hidden volume password above)")
+        }
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = useHiddenVolumeProtection,
+                onCheckedChange = { 
+                    useHiddenVolumeProtection = it
+                    if (it) useHiddenVolume = false  // mutually exclusive
+                },
+                enabled = !isMounted
+            )
+            Column {
+                Text("Protect hidden volume while mounting outer")
+                Text(
+                    text = "Prevents outer volume writes from damaging hidden data",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        
+        if (useHiddenVolumeProtection) {
+            OutlinedTextField(
+                value = hiddenVolumeProtectionPassword,
+                onValueChange = { hiddenVolumeProtectionPassword = it },
+                label = { Text("Hidden Volume Password (for protection)") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isMounted,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    autoCorrect = false
+                ),
+                supportingText = {
+                    Text("Enter the hidden volume password so the app can locate and protect its data area")
+                }
+            )
+        }
+        
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        
         if (!isMounted) {
             Button(
                 onClick = {
@@ -381,7 +450,15 @@ fun OpenContainerScreen(onNavigateToTab: (Int) -> Unit = {}) {
                         return@Button
                     }
                     
-                    statusMessage = "Mounting container..."
+                    if (useHiddenVolumeProtection && hiddenVolumeProtectionPassword.isEmpty()) {
+                        statusMessage = "Please enter the hidden volume password for protection"
+                        statusColor = Color.Red
+                        return@Button
+                    }
+                    
+                    statusMessage = if (useHiddenVolume) "Mounting hidden volume..." 
+                                    else if (useHiddenVolumeProtection) "Mounting outer volume with hidden volume protection..."
+                                    else "Mounting container..."
                     statusColor = Color.Blue
                     isLoading = true
                     
@@ -393,7 +470,9 @@ fun OpenContainerScreen(onNavigateToTab: (Int) -> Unit = {}) {
                                 uri = containerUri!!,
                                 password = password,
                                 pim = pimValue,
-                                keyfileUris = if (useKeyfiles) keyfileUris else emptyList()
+                                keyfileUris = if (useKeyfiles) keyfileUris else emptyList(),
+                                useHiddenVolume = useHiddenVolume,
+                                hiddenVolumeProtectionPassword = if (useHiddenVolumeProtection) hiddenVolumeProtectionPassword else null
                             )
                         }
                         
@@ -402,11 +481,19 @@ fun OpenContainerScreen(onNavigateToTab: (Int) -> Unit = {}) {
                             onSuccess = { info ->
                                 volumeInfo = info
                                 isMounted = true
+                                val volumeType = when {
+                                    info.isHiddenVolume -> "🔒 Hidden volume"
+                                    info.outerVolumeProtectedSize > 0 -> "📦 Outer volume (hidden vol protected)"
+                                    else -> "📦 Standard volume"
+                                }
                                 statusMessage = "✓ Successfully mounted!\n" +
+                                    "Type: $volumeType\n" +
                                     "Total size: ${info.totalSize / (1024 * 1024)} MB\n" +
                                     "Data area: ${info.getDataAreaSizeMB()} MB\n" +
-                                    "Sector size: ${info.sectorSize} bytes\n\n" +
-                                    "📁 Volume is now accessible to other apps through:\n" +
+                                    "Sector size: ${info.sectorSize} bytes\n" +
+                                    (if (info.outerVolumeProtectedSize > 0) 
+                                        "Protected area: ${info.outerVolumeProtectedSize / (1024*1024)} MB\n" else "") +
+                                    "\n📁 Volume is now accessible to other apps through:\n" +
                                     "Files app → ☰ Menu → VeraCrypt Volume"
                                 statusColor = Color(0xFF4CAF50)
                                 
@@ -518,6 +605,12 @@ fun CreateContainerScreen() {
     var useKeyfiles by remember { mutableStateOf(false) }
     var selectedAlgorithm by remember { mutableStateOf(EncryptionAlgorithm.AES) }
     var algorithmDropdownExpanded by remember { mutableStateOf(false) }
+    
+    // Hidden volume state
+    var createHiddenVolume by remember { mutableStateOf(false) }
+    var hiddenVolumePassword by remember { mutableStateOf("") }
+    var confirmHiddenPassword by remember { mutableStateOf("") }
+    var hiddenVolumeSize by remember { mutableStateOf("") }
     
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -716,6 +809,107 @@ fun CreateContainerScreen() {
             }
         }
         
+        // Hidden volume section
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        
+        Text(
+            text = "Hidden Volume (Plausible Deniability)",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(
+                checked = createHiddenVolume,
+                onCheckedChange = { createHiddenVolume = it },
+                enabled = !isCreating
+            )
+            Column {
+                Text("Create hidden volume inside this container")
+                Text(
+                    text = "Two-step process: first creates the outer volume, then embeds a hidden volume inside it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        
+        if (createHiddenVolume) {
+            OutlinedTextField(
+                value = hiddenVolumePassword,
+                onValueChange = { hiddenVolumePassword = it },
+                label = { Text("Hidden Volume Password") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isCreating,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    autoCorrect = false
+                ),
+                supportingText = {
+                    Text("Must be different from the outer volume password")
+                }
+            )
+            
+            OutlinedTextField(
+                value = confirmHiddenPassword,
+                onValueChange = { confirmHiddenPassword = it },
+                label = { Text("Confirm Hidden Password") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isCreating,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    autoCorrect = false
+                )
+            )
+            
+            OutlinedTextField(
+                value = hiddenVolumeSize,
+                onValueChange = { 
+                    if (it.isEmpty() || it.all { char -> char.isDigit() }) {
+                        hiddenVolumeSize = it
+                    }
+                },
+                label = { Text("Hidden Volume Size (MB)") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isCreating,
+                placeholder = { Text("Must be smaller than outer container") },
+                supportingText = {
+                    val outerMB = containerSize.toLongOrNull() ?: 0
+                    val maxHidden = if (outerMB > 0) outerMB - 1 else 0
+                    Text("Max ~${maxHidden} MB (outer container: ${outerMB} MB)")
+                }
+            )
+            
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "⚠️ Plausible Deniability",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "The hidden volume is undetectable without its password. " +
+                            "The outer volume password reveals only the outer data. " +
+                            "When mounting the outer volume, enable 'Protect hidden volume' " +
+                            "to prevent writes from overwriting hidden data.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+        
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        
         Button(
             onClick = {
                 if (confirmPassword.isNotEmpty() && password != confirmPassword) {
@@ -733,11 +927,40 @@ fun CreateContainerScreen() {
                     return@Button
                 }
                 
+                // Validate hidden volume parameters
+                if (createHiddenVolume) {
+                    if (hiddenVolumePassword.isEmpty()) {
+                        statusMessage = "Error: Hidden volume password is required!"
+                        return@Button
+                    }
+                    if (confirmHiddenPassword.isNotEmpty() && hiddenVolumePassword != confirmHiddenPassword) {
+                        statusMessage = "Error: Hidden volume passwords do not match!"
+                        return@Button
+                    }
+                    if (hiddenVolumePassword == password) {
+                        statusMessage = "Error: Hidden volume password must be different from outer volume password!"
+                        return@Button
+                    }
+                    val hiddenMB = hiddenVolumeSize.toLongOrNull()
+                    if (hiddenMB == null || hiddenMB < 1) {
+                        statusMessage = "Error: Invalid hidden volume size!"
+                        return@Button
+                    }
+                    if (hiddenMB >= sizeMB) {
+                        statusMessage = "Error: Hidden volume must be smaller than outer container!"
+                        return@Button
+                    }
+                }
+                
                 isCreating = true
-                statusMessage = "Creating container... Please wait."
+                statusMessage = if (createHiddenVolume) 
+                    "Creating container with hidden volume... Please wait."
+                else 
+                    "Creating container... Please wait."
                 
                 scope.launch {
                     try {
+                        // Step 1: Create the outer container
                         val result = withContext(Dispatchers.IO) {
                             val pimValue = pim.toIntOrNull() ?: 0
                             VolumeCreator.createContainer(
@@ -751,8 +974,37 @@ fun CreateContainerScreen() {
                             )
                         }
                         
-                        statusMessage = result.getOrElse { e ->
-                            "Error: ${e.message}"
+                        if (result.isFailure) {
+                            statusMessage = "Error: ${result.exceptionOrNull()?.message}"
+                            isCreating = false
+                            return@launch
+                        }
+                        
+                        // Step 2: Create hidden volume inside the outer container (if requested)
+                        if (createHiddenVolume) {
+                            statusMessage = "Outer container created. Creating hidden volume..."
+                            
+                            val hiddenResult = withContext(Dispatchers.IO) {
+                                val pimValue = pim.toIntOrNull() ?: 0
+                                VolumeCreator.createHiddenVolume(
+                                    containerPath = containerPath,
+                                    outerPassword = password,
+                                    hiddenPassword = hiddenVolumePassword,
+                                    hiddenSizeInMB = hiddenVolumeSize.toLongOrNull() ?: 1,
+                                    pim = pimValue,
+                                    keyfileUris = if (useKeyfiles) keyfileUris else emptyList(),
+                                    context = context,
+                                    algorithm = selectedAlgorithm
+                                )
+                            }
+                            
+                            statusMessage = hiddenResult.getOrElse { e ->
+                                "Outer container created but hidden volume failed: ${e.message}"
+                            }
+                        } else {
+                            statusMessage = result.getOrElse { e ->
+                                "Error: ${e.message}"
+                            }
                         }
                     } catch (e: Exception) {
                         statusMessage = "Error: ${e.message}"

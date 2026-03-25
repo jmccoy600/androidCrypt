@@ -41,6 +41,28 @@ object VolumeConstants {
     // Volume version
     const val VOLUME_HEADER_VERSION_NUM = 0x0005
     const val TC_VOLUME_MIN_REQUIRED_PROGRAM_VERSION = 0x010b
+    
+    // Hidden volume constants (from VeraCrypt src/Common/Volumes.h)
+    // The hidden volume header is stored at offset 64KB (= VOLUME_HEADER_SIZE) within
+    // the outer volume.  Its backup header sits at (end - 64KB).
+    // The hidden volume data area occupies the tail of the outer volume's data area,
+    // right before the backup header group.
+    const val HIDDEN_VOLUME_HEADER_OFFSET = VOLUME_HEADER_SIZE  // 65536
+    const val TOTAL_VOLUME_HEADERS_SIZE = 4 * VOLUME_HEADER_SIZE  // 256KB for all 4 headers
+    
+    // Small-volume threshold (2 MB) – hidden volumes in containers below this
+    // size use a smaller reserved end-area so they can still fit.
+    const val VOLUME_SMALL_SIZE_THRESHOLD = 2L * 1024 * 1024
+    
+    // Reserved area at the end of the outer FS that the hidden volume must not
+    // overwrite.  FAT fills the last sector with 0x00 on quick-format;
+    // reserving this space avoids false hidden-volume-protection triggers.
+    const val HIDDEN_VOLUME_HOST_FS_RESERVED_END_AREA_SIZE = 4096L           // for small volumes
+    const val HIDDEN_VOLUME_HOST_FS_RESERVED_END_AREA_SIZE_HIGH = VOLUME_HEADER_GROUP_SIZE  // 128KB for large volumes
+    
+    // Minimum sizes
+    const val MIN_FAT_FS_SIZE = 9L * 4096   // 9 × max-sector
+    const val MIN_HIDDEN_VOLUME_SIZE = MIN_FAT_FS_SIZE + HIDDEN_VOLUME_HOST_FS_RESERVED_END_AREA_SIZE
 }
 
 /**
