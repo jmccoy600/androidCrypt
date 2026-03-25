@@ -1,4 +1,3 @@
-.git
-.gradle
-.idea
-./app/.cxx
+.gradle/
+.idea/
+app/.cxx/
