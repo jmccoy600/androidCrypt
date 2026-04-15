@@ -18,6 +18,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -80,6 +81,7 @@ class MainActivity : ComponentActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         
         // Prevent screenshots and screen recording of sensitive content
         window.setFlags(
@@ -154,6 +156,7 @@ fun MainScreen() {
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
         ScrollableTabRow(selectedTabIndex = selectedTab) {
             Tab(
@@ -1454,7 +1457,7 @@ fun HowToUseScreen() {
                 )
                 
                 Text(
-                    text = "• Compatible with VeraCrypt desktop application AES encrypted file containers",
+                    text = "• Compatible with VeraCrypt desktop application encrypted file containers",
                     style = MaterialTheme.typography.bodyLarge
                 )
             }
