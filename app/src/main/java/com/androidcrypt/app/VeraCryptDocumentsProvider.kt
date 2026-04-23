@@ -106,7 +106,7 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
         // Video cache: media files ending in -v.valv (typically 500KB-10MB)
         internal const val VIDEO_CACHE_MAX_SIZE = 10 * 1024 * 1024 // 10MB max per video
         private const val VIDEO_CACHE_MAX_ENTRIES = 10 // Fewer but larger videos
-        internal const val VIDEO_CACHE_TTL_MS = 120_000L // 2 minute TTL for looping videos
+        internal const val VIDEO_CACHE_TTL_MS = 600_000L
         private val videoCache = object : LinkedHashMap<String, Pair<Long, ByteArray>>(
             VIDEO_CACHE_MAX_ENTRIES, 0.75f, true
         ) {
@@ -152,10 +152,15 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
             if (isVideoFile(key) || isGifFile(key)) {
                 synchronized(videoCacheLock) {
                     val entry = videoCache[key] ?: return null
-                    if (System.currentTimeMillis() - entry.first > VIDEO_CACHE_TTL_MS) {
+                    val now = System.currentTimeMillis()
+                    if (now - entry.first > VIDEO_CACHE_TTL_MS) {
                         videoCache.remove(key)
                         return null
                     }
+                    // Refresh TTL on every hit so a file the user is actively
+                    // viewing (GIF on loop, scrubbing a video) keeps its slot
+                    // for the full window after the LAST access, not the first.
+                    videoCache[key] = Pair(now, entry.second)
                     if (DEBUG_LOGGING) Log.d("VeraCryptProvider", "VIDEO CACHE HIT: $key (${entry.second.size / 1024}KB)")
                     return entry.second
                 }
@@ -163,10 +168,12 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
             // Check thumbnail cache for thumbnails
             synchronized(thumbnailCacheLock) {
                 val entry = thumbnailCache[key] ?: return null
-                if (System.currentTimeMillis() - entry.first > THUMBNAIL_CACHE_TTL_MS) {
+                val now = System.currentTimeMillis()
+                if (now - entry.first > THUMBNAIL_CACHE_TTL_MS) {
                     thumbnailCache.remove(key)
                     return null
                 }
+                thumbnailCache[key] = Pair(now, entry.second)
                 return entry.second
             }
         }
@@ -546,6 +553,14 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
         // This is the KEY optimization for video loops - keeps data immediately available
         @Volatile private var localCachedData: ByteArray? = null
         
+        // Tracks the async global-cache prefetch so we never start it twice
+        // and so onRead() can fall through to the sliding-window path while
+        // the prefetch is still in flight (instead of blocking the proxy
+        // handler thread for the entire decrypt — that was the root cause of
+        // GIF startup lag, where the first ~50MB read had to complete before
+        // Glide saw a single byte).
+        @Volatile private var prefetchStarted = false
+        
         init {
             // Pre-fetch from global cache immediately on construction
             // This eliminates any delay on the first onRead call
@@ -554,15 +569,48 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
                 if (localCachedData != null) {
                     if (DEBUG_LOGGING) Log.d(TAG, "PROXY CALLBACK: path=$path size=${fileSize/1024}KB PREFETCHED from cache")
                 } else {
-                    if (DEBUG_LOGGING) Log.d(TAG, "PROXY CALLBACK: path=$path size=${fileSize/1024}KB isVideo=${isVideoFile(globalCacheKey)} useGlobalCache=$useGlobalCache key=$globalCacheKey")
+                    // Cold cache — schedule a background full-file decrypt so
+                    // onRead() can serve sliding-window chunks immediately
+                    // instead of stalling on the whole-file load.
+                    if (DEBUG_LOGGING) Log.d(TAG, "PROXY CALLBACK: path=$path size=${fileSize/1024}KB isVideo=${isVideoFile(globalCacheKey)} useGlobalCache=$useGlobalCache key=$globalCacheKey - scheduling async prefetch")
+                    schedulePrefetch()
                 }
             } else {
                 if (DEBUG_LOGGING) Log.d(TAG, "PROXY CALLBACK: path=$path size=${fileSize/1024}KB isVideo=${isVideoFile(globalCacheKey)} useGlobalCache=false")
             }
         }
         
-        // Pre-load entire small file into global cache on first access
-        @Volatile private var globalCacheLoaded = false
+        /**
+         * Decrypt the entire file in the background and publish it to both
+         * the global cache and [localCachedData].  Subsequent random-access
+         * reads (Glide GIF frame seeks, video scrubbing) then complete in
+         * memcpy time without touching the volume reader at all.
+         */
+        private fun schedulePrefetch() {
+            if (prefetchStarted) return
+            prefetchStarted = true
+            readAheadExecutor.execute {
+                try {
+                    val readStart = System.currentTimeMillis()
+                    val full = fsReader.readFileRangeByCluster(
+                        firstCluster, fileSize, 0, fileSize.toInt()
+                    ).getOrNull()
+                    if (full != null) {
+                        putCachedFile(globalCacheKey, full)
+                        // Publish locally so the fast path in onRead picks it up
+                        localCachedData = full
+                        if (DEBUG_LOGGING) {
+                            val ms = System.currentTimeMillis() - readStart
+                            Log.d(TAG, "PROXY: async prefetch ${full.size/1024}KB in ${ms}ms for $path")
+                        }
+                    }
+                } catch (e: Exception) {
+                    if (DEBUG_LOGGING) Log.e(TAG, "Async prefetch failed for $path", e)
+                    // Reset so a future onRead can retry via the sync path
+                    prefetchStarted = false
+                }
+            }
+        }
         
         // Use larger buffers for video files to sustain high throughput
         private val isVideo = 
@@ -624,24 +672,12 @@ class VeraCryptDocumentsProvider : DocumentsProvider() {
                         }
                     }
                     
-                    // Cache miss - load entire file into global cache
-                    if (!globalCacheLoaded) {
-                        globalCacheLoaded = true
-                        val readStart = System.currentTimeMillis()
-                        val fullData = fsReader.readFileRangeByCluster(firstCluster, fileSize, 0, fileSize.toInt()).getOrNull()
-                        if (fullData != null) {
-                            putCachedFile(globalCacheKey, fullData)
-                            localCachedData = fullData  // Also store locally
-                            val readTime = System.currentTimeMillis() - readStart
-                            if (DEBUG_LOGGING) Log.d(TAG, "PROXY: Cached ${fullData.size/1024}KB in ${readTime}ms for $path")
-                            
-                            val copySize = minOf(bytesToRead, (fullData.size - offset).toInt())
-                            if (copySize > 0 && offset < fullData.size) {
-                                System.arraycopy(fullData, offset.toInt(), data, 0, copySize)
-                                return copySize
-                            }
-                        }
-                    }
+                    // Cache miss — make sure the async prefetch is running so
+                    // future random-access reads (Glide GIF frame seeks!) see
+                    // a hot cache, then fall through to the sliding-window
+                    // path below to satisfy THIS read without blocking the
+                    // proxy handler thread on a full-file decrypt.
+                    schedulePrefetch()
                 }
                 
                 synchronized(cacheLock) {
