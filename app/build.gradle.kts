@@ -84,6 +84,9 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation("androidx.documentfile:documentfile:1.0.1")
     testImplementation(libs.junit)
+    // Kotest property-based testing (shrinking-capable Arb generators).
+    // Used standalone via io.kotest.property.checkAll inside JUnit4 @Test fns.
+    testImplementation("io.kotest:kotest-property:5.9.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))

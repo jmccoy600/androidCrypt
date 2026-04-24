@@ -129,6 +129,91 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
     }
 
     /**
+     * True if [s] is round-trippable as the stem or extension of a FAT 8.3
+     * short name without an LFN entry. The 8.3 character set is uppercase
+     * letters, digits, space, and a small punctuation subset; in particular
+     * lowercase letters are NOT allowed (they would be uppercased on
+     * write, breaking case-sensitive lookups by the original spelling).
+     * Used by createDirectoryEntry to decide when to emit LFN entries \u2014
+     * see the bug-history comment there.
+     */
+    private fun is83Compatible(s: String): Boolean {
+        if (s.isEmpty()) return true
+        for (ch in s) {
+            val ok = when (ch) {
+                in 'A'..'Z', in '0'..'9' -> true
+                ' ', '!', '#', '$', '%', '&', '\'', '(', ')', '-', '@',
+                '^', '_', '`', '{', '}', '~' -> true
+                else -> false
+            }
+            if (!ok) return false
+        }
+        return true
+    }
+
+    /**
+     * Map an arbitrary string into the 8.3-legal character set by replacing
+     * any disallowed character with `_`, dropping spaces and embedded dots,
+     * and uppercasing letters. Used as the basis for the auto-generated
+     * 8.3 short name that accompanies an LFN entry.
+     */
+    private fun sanitize83(s: String): String {
+        if (s.isEmpty()) return s
+        val sb = StringBuilder(s.length)
+        for (raw in s) {
+            val ch = raw.uppercaseChar()
+            val ok = when (ch) {
+                in 'A'..'Z', in '0'..'9' -> true
+                '!', '#', '$', '%', '&', '\'', '(', ')', '-', '@',
+                '^', '_', '`', '{', '}', '~' -> true
+                else -> false
+            }
+            if (ok) sb.append(ch)
+            // Drop ' ' and '.' silently \u2014 both are illegal in the 8.3
+            // stem; '.' specifically would be re-interpreted as a separator
+            // by FAT readers if it survived into the on-disk 11-byte field.
+            else if (ch != ' ' && ch != '.') sb.append('_')
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Walk the directory chain rooted at [parentFirstCluster] and return the
+     * set of every existing 11-byte raw 8.3 short name (stem padded to 8 +
+     * extension padded to 3, ASCII). Used by `createDirectoryEntry` to pick
+     * a unique `~N` tail for LFN entries.
+     */
+    private fun collectExistingShortNames(parentFirstCluster: Int): MutableSet<String> {
+        val out = HashSet<String>()
+        val bs = bootSector ?: return out
+        val firstDataSector = bs.reservedSectors + (bs.numberOfFATs * bs.sectorsPerFAT)
+        var c = parentFirstCluster
+        var hops = 0
+        while (c >= 2 && c < 0x0FFFFFF8 && hops < 65_536) {
+            val firstSec = ((c - 2).toLong() * bs.sectorsPerCluster) + firstDataSector
+            val data = volumeReader.readSectors(firstSec, bs.sectorsPerCluster).getOrNull() ?: break
+            var off = 0
+            while (off + 32 <= data.size) {
+                val first = data[off].toInt() and 0xFF
+                if (first == 0x00) return out          // end-of-directory marker
+                if (first == 0xE5) { off += 32; continue } // deleted slot
+                val attr = data[off + 11].toInt() and 0xFF
+                if ((attr and 0x3F) == 0x0F) { off += 32; continue } // LFN entry
+                // Skip "." and ".."
+                if (first == 0x2E) { off += 32; continue }
+                // Raw 11-byte short name = stem(8) + ext(3)
+                val raw = ByteArray(11)
+                System.arraycopy(data, off, raw, 0, 11)
+                out.add(String(raw, Charsets.US_ASCII))
+                off += 32
+            }
+            c = readFATEntry(c).getOrElse { break }
+            hops++
+        }
+        return out
+    }
+
+    /**
      * Normalize path for cache keys - FAT32 is case-insensitive
      */
     private fun normalizePath(path: String): String {
@@ -366,6 +451,14 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
             // ---- count free clusters in this chunk ----
             val chunkStartByte = sectorOffset * SECTOR_SIZE
             val firstCluster = maxOf((chunkStartByte / 4).toInt(), 2) // entries 0-1 reserved
+            // Valid data cluster numbers are 2..totalClusters+1 inclusive
+            // (totalClusters is the *count* of data clusters; cluster numbering
+            // starts at 2 because FAT entries 0 and 1 are reserved). The
+            // exclusive upper bound is therefore totalClusters + 2 — using
+            // totalClusters + 1 silently dropped the last data cluster from
+            // every free-space report and from allocation candidacy (caught
+            // by the FAT chain-integrity PBT as a 1-cluster conservation
+            // shortfall: cache==2989 but on-disk scan==2990).
             val lastCluster = minOf(
                 ((chunkStartByte + readCount * SECTOR_SIZE) / 4).toInt(),
                 totalClusters + 2
@@ -686,21 +779,25 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
             val clusterSize = bs.sectorsPerCluster * SECTOR_SIZE
             
             // Determine actual file size
-            val actualFileSize = if (fileInfo.size == 0L && fileFirstCluster != 0) {
-                if (DEBUG_LOGGING) Log.w(TAG, "readFile: File '$path' has size=0 but firstCluster=$fileFirstCluster, calculating actual size from cluster chain")
-                var clusterCount = 0
-                var currentCluster = fileFirstCluster
-                val maxClusters = 100000
-                while (currentCluster >= 2 && currentCluster < 0x0FFFFFF8 && clusterCount < maxClusters) {
-                    clusterCount++
-                    currentCluster = readFATEntry(currentCluster).getOrElse { break }
-                }
-                val estimatedSize = clusterCount.toLong() * clusterSize
-                if (DEBUG_LOGGING) Log.d(TAG, "readFile: Estimated size from $clusterCount clusters: $estimatedSize bytes")
-                estimatedSize
-            } else {
-                fileInfo.size
+            // We trust the directory entry size unconditionally. The previous
+            // heuristic of "size=0 + firstCluster!=0 ⇒ estimate from chain"
+            // was a corruption-recovery hack that misfires whenever a file
+            // is legitimately truncated, causing readFile to return a whole
+            // cluster of stale/zero bytes for what should be 0 bytes. This
+            // was caught by the FAT32 stateful PBT as `expected:<0> but
+            // was:<4096>` after `Write(name, byteArrayOf())`. The
+            // truncate-to-empty path in writeFile() now correctly zeroes
+            // firstCluster, so this inconsistency should never occur — but
+            // log it loudly if it does so we can find the regression.
+            if (fileInfo.size == 0L && fileFirstCluster >= 2) {
+                if (DEBUG_LOGGING) Log.w(
+                    TAG,
+                    "readFile: inconsistent dir entry for '$path' " +
+                        "(size=0 but firstCluster=$fileFirstCluster) — " +
+                        "returning empty bytes per dir entry"
+                )
             }
+            val actualFileSize = fileInfo.size
             
             // If file is empty after checking clusters, return empty array
             if (actualFileSize == 0L) {
@@ -1235,6 +1332,19 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 val bs = bootSector ?: return@withLock Result.failure(Exception("File system not initialized"))
                 
                 val clusterSize = bs.sectorsPerCluster * SECTOR_SIZE
+
+                // Empty-write fast path: a 0-byte file must have firstCluster=0
+                // in its directory entry, otherwise readFile() will try to
+                // recover "actual" size from the cluster chain and return up
+                // to a full cluster of stale data (caught by the FAT32 PBT
+                // as `expected:<0> but was:<4096>`). Free any existing chain
+                // and update the dir entry in place.
+                if (data.isEmpty()) {
+                    return@withLock truncateToEmpty(path).map {
+                        WriteAllocation(emptyList(), 0, clusterSize, bs.sectorsPerCluster)
+                    }
+                }
+
                 val clustersNeeded = ((data.size + clusterSize - 1) / clusterSize).coerceAtLeast(1)
             
             // Validate file size doesn't exceed available space
@@ -1395,7 +1505,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 clusterIndex += contiguousCount
             }
             
-            fileCache.remove(path)
+            fileCache.remove(normalizePath(path))
             // Surgical cache invalidation — only remove the parent directory
             // instead of clearing all cached directories.
             val parentPath = path.substringBeforeLast('/', "/")
@@ -1621,7 +1731,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 }
             }
             
-            fileCache.remove(path)
+            fileCache.remove(normalizePath(path))
             // Surgical cache invalidation — only remove the parent directory
             val parentPath = path.substringBeforeLast('/', "/")
             directoryCache.remove(normalizePath(parentPath))
@@ -1860,7 +1970,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 volumeReader.writeSectors(dirEntry.dirSector, freshClusterData).getOrThrow()
             }
             
-            fileCache.remove(path)
+            fileCache.remove(normalizePath(path))
             // Surgical cache invalidation — only remove the parent directory
             val parentPath = path.substringBeforeLast('/', "/")
             directoryCache.remove(normalizePath(parentPath))
@@ -1896,8 +2006,10 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
             var freeClusters = 0
             val prefetchCount = 32
             var clusterIndex = 2
-            
-            while (clusterIndex <= totalClusters) {
+            // Valid data cluster numbers are 2..totalClusters+1 (see prefetchFAT comment).
+            val lastClusterInclusive = totalClusters + 1
+
+            while (clusterIndex <= lastClusterInclusive) {
                 val fatSectorOffset = (clusterIndex * 4) / SECTOR_SIZE
                 
                 // Try per-sector cache (dirty sectors from writes), then block cache
@@ -1943,7 +2055,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 // Process all entries in this sector in a tight loop
                 val data = fatSectorData
                 var offsetInSector = (clusterIndex * 4) % SECTOR_SIZE
-                while (offsetInSector <= SECTOR_SIZE - 4 && clusterIndex <= totalClusters) {
+                while (offsetInSector <= SECTOR_SIZE - 4 && clusterIndex <= lastClusterInclusive) {
                     val absOff = fatDataBase + offsetInSector
                     val b0 = data[absOff].toInt() and 0xFF
                     val b1 = data[absOff + 1].toInt() and 0xFF
@@ -2054,10 +2166,12 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
             var wrapped = false
             val prefetchCount = 32 // Read 32 sectors at a time (covers 4096 clusters)
             val clustersPerSector = SECTOR_SIZE / 4 // 128 clusters per 512-byte sector
+            // Valid data cluster numbers are 2..totalClusters+1 inclusive.
+            val lastClusterInclusive = totalClusters + 1
             
             while (clusters.size < count) {
                 // Wrap around if we reached the end
-                if (clusterIndex > totalClusters) {
+                if (clusterIndex > lastClusterInclusive) {
                     if (wrapped) break
                     clusterIndex = 2
                     wrapped = true
@@ -2126,7 +2240,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 
                 while (offsetInSector <= SECTOR_SIZE - 4 && clusters.size < count) {
                     // Check wrap/bounds on clusterIndex
-                    if (clusterIndex > totalClusters) break
+                    if (clusterIndex > lastClusterInclusive) break
                     if (wrapped && clusterIndex >= lastAllocatedCluster) break
                     
                     // Read 4-byte LE FAT entry directly from byte array
@@ -2365,7 +2479,49 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
         
         return existingChain + newClusters
     }
-    
+
+    /**
+     * Truncate a file to zero length: free its cluster chain (if any) and
+     * zero out both the firstCluster and size fields in its directory entry.
+     *
+     * This is the empty-write fast path used by [writeFile] when called with
+     * an empty payload. It guarantees that a 0-byte file's dir entry has
+     * `firstCluster = 0`, which is what every FAT32 implementation in the
+     * wild expects and what [readFile] relies on to return `ByteArray(0)`
+     * without inspecting the cluster chain.
+     *
+     * Caller must already hold [writeLock].
+     */
+    private fun truncateToEmpty(path: String): Result<Unit> {
+        return try {
+            val fileInfo = getFileInfoWithCluster(path).getOrThrow()
+            if (fileInfo.isDirectory) {
+                return Result.failure(Exception("Cannot truncate a directory: $path"))
+            }
+            // Free the existing cluster chain (no-op if firstCluster < 2).
+            if (fileInfo.firstCluster >= 2) {
+                freeClusters(fileInfo.firstCluster)
+                clusterChainCache.remove(fileInfo.firstCluster)
+            }
+            // Zero firstCluster + size in the dir entry.
+            updateFileEntryClusterAndSize(path, firstCluster = 0, fileSize = 0L)
+
+            // Cache hygiene matches the tail of writeFile().
+            fileCache.remove(normalizePath(path))
+            val parentPath = path.substringBeforeLast('/', "/")
+            directoryCache.remove(normalizePath(parentPath))
+            if (parentPath == "/" || parentPath.isEmpty()) {
+                directoryCache.remove(""); directoryCache.remove("/")
+            }
+            invalidateFreeSpaceCache()
+            volumeReader.sync()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            if (DEBUG_LOGGING) Log.e(TAG, "truncateToEmpty failed for $path", e)
+            Result.failure(e)
+        }
+    }
+
     private fun freeClusters(firstCluster: Int) {
         val bs = bootSector ?: return
         val fatStartSector = bs.reservedSectors
@@ -2373,6 +2529,7 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
         try {
             var cluster = firstCluster
             val fatUpdates = mutableMapOf<Int, ByteArray>()
+            var clearedCount = 0
             
             while (cluster != 0 && cluster < 0x0FFFFFF8) {
                 // Calculate which FAT sector contains this cluster entry
@@ -2391,12 +2548,22 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 
                 // Mark cluster as free
                 ByteBuffer.wrap(fatSector, offsetInSector, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(0)
+                clearedCount++
                 
                 cluster = nextCluster
             }
             
             // Batch-write consecutive FAT sectors (same optimization as writeClusterChain)
             batchWriteFATSectors(fatUpdates)
+
+            // Keep the cached free-cluster scalar in sync with the on-disk FAT.
+            // Without this increment the cache monotonically decays (every
+            // allocateClusters() decrements but no symmetric increment ever
+            // happens), making countFreeClusters() over-report used space and
+            // eventually triggering bogus "not enough space" errors.
+            if (cachedFreeClusters >= 0 && clearedCount > 0) {
+                cachedFreeClusters += clearedCount
+            }
         } catch (e: Exception) {
             if (DEBUG_LOGGING) Log.e(TAG, "Failed to free clusters", e)
         }
@@ -2729,10 +2896,18 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                 
                 val clusterSize = bs.sectorsPerCluster * SECTOR_SIZE
                 
-                // Determine if we need LFN
-                val needsLfn = fileName.length > 12 || (fileName.contains('.') && (
-                    fileName.substringBeforeLast('.').length > 8 || 
-                    fileName.substringAfterLast('.').length > 3))
+                // Determine if we need LFN. Must mirror createDirectoryEntry()'s logic exactly:
+                // a name needs an LFN if either component is too long OR contains characters that
+                // wouldn't survive an 8.3 round-trip (e.g. lowercase letters, Unicode). Otherwise a
+                // pure-ASCII lowercase name like "f.bin" would lose its case on move because only
+                // the uppercase 8.3 entry from the source would be written.
+                val needsLfn = if (fileName.contains('.')) {
+                    val stem = fileName.substringBeforeLast('.')
+                    val ext = fileName.substringAfterLast('.')
+                    stem.length > 8 || ext.length > 3 || !is83Compatible(stem) || !is83Compatible(ext)
+                } else {
+                    fileName.length > 8 || !is83Compatible(fileName)
+                }
                 val lfnEntriesNeeded = if (needsLfn) ((fileName.length + 12) / 13) else 0
                 val totalEntriesNeeded = lfnEntriesNeeded + 1
                 
@@ -2838,11 +3013,14 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                     }
                 }
                 
-                // 5. Invalidate caches for both old and new parents
-                directoryCache.remove(sourceParentPath)
-                directoryCache.remove(targetParentPath)
-                directoryCache.remove(sourcePath)
-                fileCache.remove(sourcePath)
+                // 5. Invalidate caches for both old and new parents.
+                // All cache keys are normalized (lowercased), so we must normalize lookups too —
+                // otherwise a moved/deleted uppercase path leaves a stale entry that makes
+                // exists() and getFileInfo() return success forever.
+                directoryCache.remove(normalizePath(sourceParentPath))
+                directoryCache.remove(normalizePath(targetParentPath))
+                directoryCache.remove(normalizePath(sourcePath))
+                fileCache.remove(normalizePath(sourcePath))
                 if (sourceParentPath == "/" || sourceParentPath.isEmpty()) {
                     directoryCache.remove(""); directoryCache.remove("/")
                 }
@@ -2913,12 +3091,21 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                     return@withLock Result.failure(Exception("Cannot delete root directory"))
                 }
                 
-                // Clear caches first
-                directoryCache.remove(path)
-                fileCache.remove(path)
+                // Clear caches first. directoryCache + fileCache both use normalizePath() as
+                // their key, so we must normalize here too — otherwise paths containing any
+                // uppercase character leave stale entries that survive the deletion.
+                directoryCache.remove(normalizePath(path))
+                fileCache.remove(normalizePath(path))
                 
-                val fileInfo = getFileInfo(path).getOrThrow()
-                if (DEBUG_LOGGING) Log.d(TAG, "delete: Found entry, isDirectory=${fileInfo.isDirectory}")
+                // Resolve firstCluster *before* mutating anything so we can
+                // free the file/dir's cluster chain after the dir entry is
+                // zapped. Using getFileInfoWithCluster (not getFileInfo) is
+                // critical — the cached basic FileEntry has firstCluster=0,
+                // which would silently leak the entire data chain on every
+                // delete (caught by the FAT32 stateful PBT as a payload-
+                // proportional drift in countFreeClusters()).
+                val fileInfo = getFileInfoWithCluster(path).getOrThrow()
+                if (DEBUG_LOGGING) Log.d(TAG, "delete: Found entry, isDirectory=${fileInfo.isDirectory}, firstCluster=${fileInfo.firstCluster}")
                 
                 // For directories, recursively delete contents first
                 if (fileInfo.isDirectory) {
@@ -2932,18 +3119,27 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                         }
                     }
                     // Clear cache again after deleting children
-                    directoryCache.remove(path)
+                    directoryCache.remove(normalizePath(path))
                 }
                 
                 // Mark directory entry as deleted
                 if (DEBUG_LOGGING) Log.d(TAG, "delete: Now deleting the entry itself at $path")
                 deleteDirectoryEntry(path)
                 
+                // Free the file's (or now-empty directory's) cluster chain.
+                // deleteDirectoryEntry only marks the parent's dir entry as
+                // 0xE5 — it never touches the FAT. Without this call every
+                // delete leaks all data clusters belonging to the entry.
+                if (fileInfo.firstCluster >= 2) {
+                    freeClusters(fileInfo.firstCluster)
+                    clusterChainCache.remove(fileInfo.firstCluster)
+                }
+                
                 // Clear caches - handle both "/" and "" as root path representations
                 val parentPath = path.substringBeforeLast('/', "/")
-                directoryCache.remove(parentPath)
-                directoryCache.remove(path)
-                fileCache.remove(path)
+                directoryCache.remove(normalizePath(parentPath))
+                directoryCache.remove(normalizePath(path))
+                fileCache.remove(normalizePath(path))
                 // Also clear root under both possible keys
                 if (parentPath == "" || parentPath == "/") {
                     directoryCache.remove("")
@@ -2973,10 +3169,11 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
     private fun deleteRecursive(path: String): Result<Unit> {
         try {
             // Clear cache for this path first to get fresh info
-            directoryCache.remove(path)
-            fileCache.remove(path)
+            directoryCache.remove(normalizePath(path))
+            fileCache.remove(normalizePath(path))
             
-            val fileInfo = getFileInfo(path).getOrThrow()
+            // Resolve firstCluster before mutating (see comment in delete()).
+            val fileInfo = getFileInfoWithCluster(path).getOrThrow()
             
             // For directories, recursively delete contents first
             if (fileInfo.isDirectory) {
@@ -2988,18 +3185,24 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
                     }
                 }
                 // Clear directory cache again after deleting children
-                directoryCache.remove(path)
+                directoryCache.remove(normalizePath(path))
             }
             
             // Mark directory entry as deleted
             if (DEBUG_LOGGING) Log.d(TAG, "deleteRecursive: Deleting entry")
             deleteDirectoryEntry(path)
             
+            // Free the file's cluster chain (see comment in delete()).
+            if (fileInfo.firstCluster >= 2) {
+                freeClusters(fileInfo.firstCluster)
+                clusterChainCache.remove(fileInfo.firstCluster)
+            }
+            
             // Clear caches - handle both "/" and "" as root path representations
             val parentPath = path.substringBeforeLast('/', "/")
-            directoryCache.remove(parentPath)
-            directoryCache.remove(path)
-            fileCache.remove(path)
+            directoryCache.remove(normalizePath(parentPath))
+            directoryCache.remove(normalizePath(path))
+            fileCache.remove(normalizePath(path))
             // Also clear root under both possible keys
             if (parentPath == "" || parentPath == "/") {
                 directoryCache.remove("")
@@ -3036,10 +3239,25 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
         val firstDataSector = bs.reservedSectors + (bs.numberOfFATs * bs.sectorsPerFAT)
         val clusterSize = bs.sectorsPerCluster * SECTOR_SIZE
         
-        // Check if we need LFN entries (name longer than 8.3)
-        val needsLfn = name.length > 12 || (name.contains('.') && (
-            name.substringBeforeLast('.').length > 8 || 
-            name.substringAfterLast('.').length > 3))
+        // Check if we need LFN entries.  A name fits 8.3 only if:
+        //   * with a dot:    name part \u2264 8, extension \u2264 3
+        //   * without a dot: name itself \u2264 8
+        //   * uses only the 8.3-legal character set, and is uppercase.
+        // The previous condition (name.length > 12) silently truncated any
+        // 9\u201312 character no-dot name to a 7-char short name + tilde, so
+        // e.g. "cc_parity" was stored on disk as "CC_PARIT" and a
+        // subsequent lookup by the original name returned "not found"
+        // (caught by the FAT32 cache-vs-FAT PBT). Containing a lowercase
+        // letter is also LFN-required for round-trippable case, otherwise
+        // names round-trip uppercased and fail case-sensitive lookups
+        // upstream that use the user-provided spelling.
+        val needsLfn = if (name.contains('.')) {
+            val stem = name.substringBeforeLast('.')
+            val ext = name.substringAfterLast('.')
+            stem.length > 8 || ext.length > 3 || !is83Compatible(stem) || !is83Compatible(ext)
+        } else {
+            name.length > 8 || !is83Compatible(name)
+        }
         
         val lfnEntriesNeeded = if (needsLfn) {
             ((name.length + 12) / 13) // Each LFN entry holds 13 characters
@@ -3127,16 +3345,69 @@ class FAT32Reader(private val volumeReader: VolumeReader) : FileSystemReader {
             clusterData = volumeReader.readSectors(firstSectorOfCluster, bs.sectorsPerCluster).getOrThrow()
         }
         
-        // Create 8.3 short name
+        // Create 8.3 short name.
+        //
+        // The 8 / 3 fields use only the 8.3-legal character set; any
+        // illegal char (space, dot beyond the separator, plus, comma,
+        // semicolon, etc.) is replaced with '_'. For LFN entries the
+        // 8.3 part must additionally be **unique within the parent
+        // directory** \u2014 Windows and chkdsk reject volumes that
+        // contain duplicate 8.3 entries. We therefore append a
+        // numeric tail "~N" (1, 2, 3, \u2026) chosen to avoid every
+        // existing short name in the parent. Without this every file
+        // sharing an 8.3 stem (e.g. "Document of meeting 1.pdf"
+        // \u2026 "Document of meeting 27.pdf") collapsed to the
+        // identical "DOCUMENT PDF" 8.3 entry, which the FAT32
+        // short-name-collision PBT caught on the first iteration.
         val shortName: String
         val ext: String
-        if (name.contains('.')) {
-            val namePart = name.substringBeforeLast('.')
-            ext = name.substringAfterLast('.').take(3).uppercase().padEnd(3, ' ')
-            shortName = namePart.take(8).uppercase().padEnd(8, ' ')
-        } else {
-            shortName = name.take(8).uppercase().padEnd(8, ' ')
-            ext = "   "
+        run {
+            val rawStem: String
+            val rawExt: String
+            if (name.contains('.')) {
+                rawStem = name.substringBeforeLast('.')
+                rawExt = name.substringAfterLast('.')
+            } else {
+                rawStem = name
+                rawExt = ""
+            }
+            val cleanStem = sanitize83(rawStem)
+            val cleanExt = sanitize83(rawExt).take(3)
+            ext = cleanExt.uppercase().padEnd(3, ' ')
+            val baseStem = cleanStem.take(8).uppercase().padEnd(8, ' ').trimEnd()
+
+            if (!needsLfn) {
+                // Pure 8.3 name \u2014 baseStem is the user-typed name and
+                // collisions are surfaced upstream as "file already exists".
+                shortName = baseStem.padEnd(8, ' ')
+            } else {
+                // Build the set of existing short names in the parent dir.
+                val existing = collectExistingShortNames(parentFirstCluster)
+                fun encode(stem: String): String =
+                    stem.padEnd(8, ' ') + ext
+                var chosen: String? = null
+                // Microsoft VFAT: try ~1..~999999. The basis is truncated so
+                // basis + "~N" fits in 8 chars.
+                var n = 1
+                while (n <= 999_999) {
+                    val tail = "~$n"
+                    val keepStem = baseStem.take(maxOf(0, 8 - tail.length))
+                    val candidate = (keepStem + tail).padEnd(8, ' ')
+                    val encoded = candidate + ext
+                    if (encoded !in existing) {
+                        chosen = candidate
+                        break
+                    }
+                    n++
+                }
+                if (chosen == null) {
+                    // Should never happen \u2014 fall back to the basis even
+                    // if it duplicates, rather than corrupt the directory by
+                    // refusing the write.
+                    chosen = baseStem.padEnd(8, ' ')
+                }
+                shortName = chosen
+            }
         }
         
         // Create main 8.3 directory entry

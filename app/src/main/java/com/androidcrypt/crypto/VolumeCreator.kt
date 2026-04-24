@@ -251,10 +251,28 @@ class VolumeCreator {
             val reservedSectors = 32
             val numberOfFATs = 2
             val rootDirFirstCluster = 2
-            
-            // Calculate sectors per FAT (simplified)
-            val clusterCount = (sectorCount - reservedSectors) / (sectorsPerCluster + 1)
-            val sectorsPerFAT = (clusterCount * 4 + SECTOR_SIZE - 1) / SECTOR_SIZE
+
+            // Sectors per FAT — Microsoft FAT32 specification §3.5 "Determination
+            // of FAT size" (white paper "FAT: General Overview of On-Disk Format",
+            // sec 3.5). The naive `(sectorCount - rsv)/(spc + 1)` approximation
+            // used previously under-counted FAT sectors, so the FAT could not
+            // cover every cluster in the data area. countFreeClusters() then
+            // iterated past the FAT region and read garbage out of the data
+            // area, returning bogus free counts (caught by the FAT32 PBT as
+            // a 300+ cluster cache-vs-disk drift on a 12 MB container).
+            //
+            //   tmpVal1 = totalSectors - reservedSectors                (no root-dir sectors on FAT32)
+            //   tmpVal2 = ((256 * spc) + numFATs) / 2                   (FAT32 variant)
+            //   sectorsPerFAT = ceil(tmpVal1 / tmpVal2)
+            //
+            // Result fully covers `(totalSectors - rsv - numFATs*FATSz)/spc` clusters
+            // with one 4-byte FAT entry each (plus the two reserved entries).
+            val tmpVal1 = sectorCount - reservedSectors
+            val tmpVal2 = ((256L * sectorsPerCluster) + numberOfFATs) / 2L
+            val sectorsPerFAT = ((tmpVal1 + (tmpVal2 - 1)) / tmpVal2).toInt()
+            // Recompute clusterCount AFTER fixing the FAT size so any caller
+            // that uses it sees the actual addressable cluster count.
+            val clusterCount = ((sectorCount - reservedSectors - numberOfFATs.toLong() * sectorsPerFAT) / sectorsPerCluster).toInt()
             
             // Generate random volume ID like VeraCrypt.
             // SECURITY: this 4-byte value is written ONLY into the FAT32 boot
@@ -782,8 +800,12 @@ class VolumeCreator {
             val numberOfFATs = 2
             val rootDirFirstCluster = 2
 
-            val clusterCount = (sectorCount - reservedSectors) / (sectorsPerCluster + 1)
-            val sectorsPerFAT = (clusterCount * 4 + SECTOR_SIZE - 1) / SECTOR_SIZE
+            // Microsoft FAT32 spec sectorsPerFAT — see comment in normal-volume
+            // formatFAT32 above for derivation and bug history.
+            val tmpVal1 = sectorCount - reservedSectors
+            val tmpVal2 = ((256L * sectorsPerCluster) + numberOfFATs) / 2L
+            val sectorsPerFAT = ((tmpVal1 + (tmpVal2 - 1)) / tmpVal2).toInt()
+            val clusterCount = ((sectorCount - reservedSectors - numberOfFATs.toLong() * sectorsPerFAT) / sectorsPerCluster).toInt()
             
             // SECURITY: see normal-volume formatFAT32 above — this volumeId
             // is written only into the encrypted boot sector and never
