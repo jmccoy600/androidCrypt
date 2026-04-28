@@ -1,0 +1,1 @@
+added test coverage for fat32 reader, fixed a few related bugs
