@@ -93,6 +93,7 @@ enum class FileSystemType {
     FAT12,
     FAT16,
     FAT32,
+    EXFAT,
     NTFS,
     EXT4,
     UNKNOWN

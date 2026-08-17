@@ -14,7 +14,10 @@ object VolumeMountManager {
     private const val DEBUG_LOGGING = false
     private const val DOCUMENTS_AUTHORITY = "com.androidcrypt.documents"
     private val mountedVolumes = java.util.concurrent.ConcurrentHashMap<String, VolumeReader>()
+    // FAT32 readers keyed by volume path (legacy)
     private val fileSystemReaders = mutableMapOf<String, FAT32Reader>()
+    // exFAT readers keyed by volume path
+    private val exFatReaders = mutableMapOf<String, ExFatReader>()
     private val fsReaderLock = java.util.concurrent.locks.ReentrantLock()
     private var appContext: Context? = null
     
@@ -149,9 +152,12 @@ object VolumeMountManager {
             
             reader.unmount()
             mountedVolumes.remove(containerPath)
-            // Remove shared file system reader
+            // Remove shared file system readers
             fsReaderLock.lock()
-            try { fileSystemReaders.remove(containerPath) } finally { fsReaderLock.unlock() }
+            try {
+                fileSystemReaders.remove(containerPath)
+                exFatReaders.remove(containerPath)
+            } finally { fsReaderLock.unlock() }
             
             // H-2: purge any decrypted plaintext for this volume that the
             // DocumentsProvider may still be holding in its video / GIF /
@@ -189,7 +195,10 @@ object VolumeMountManager {
         mountedVolumes.clear()
         // Clear all shared file system readers
         fsReaderLock.lock()
-        try { fileSystemReaders.clear() } finally { fsReaderLock.unlock() }
+        try {
+            fileSystemReaders.clear()
+            exFatReaders.clear()
+        } finally { fsReaderLock.unlock() }
         
         // H-2: purge every cached decrypted byte for each unmounted volume.
         try {
@@ -230,6 +239,28 @@ object VolumeMountManager {
     }
     
     /**
+     * Detect the file system type of a mounted volume by reading the boot sector's
+     * FileSystemName field. exFAT places "EXFAT   " at offset 3 (spec §3.1.2);
+     * FAT32 has a 0x55AA signature at offset 510 with no exFAT magic.
+     */
+    private fun detectFileSystemType(reader: VolumeReader): FileSystemType {
+        return try {
+            val boot = reader.readSector(0).getOrNull() ?: return FileSystemType.UNKNOWN
+            val magic = boot.copyOfRange(3, 11)
+            if (magic.contentEquals("EXFAT   ".toByteArray(Charsets.US_ASCII))) {
+                FileSystemType.EXFAT
+            } else if ((boot[510].toInt() and 0xFF) == 0x55 &&
+                       (boot[511].toInt() and 0xFF) == 0xAA) {
+                FileSystemType.FAT32
+            } else {
+                FileSystemType.UNKNOWN
+            }
+        } catch (_: Exception) {
+            FileSystemType.UNKNOWN
+        }
+    }
+
+    /**
      * Get or create a shared FAT32Reader for the given volume.
      * This ensures CopyService and DocumentsProvider share the same reader
      * with warm caches, avoiding redundant FAT/directory reads.
@@ -238,16 +269,70 @@ object VolumeMountManager {
         fsReaderLock.lock()
         try {
             fileSystemReaders[volumePath]?.let { return it }
-            
+
             val reader = mountedVolumes[volumePath] ?: return null
-            val fsReader = FAT32Reader(reader)
+            // Only hand out a FAT32Reader if the volume actually is FAT32.
+            when (detectFileSystemType(reader)) {
+                FileSystemType.FAT32, FileSystemType.FAT16, FileSystemType.FAT12, FileSystemType.UNKNOWN -> {
+                    val fsReader = FAT32Reader(reader)
+                    val initResult = fsReader.initialize()
+                    if (initResult.isFailure) {
+                        if (DEBUG_LOGGING) Log.e(TAG, "Failed to initialize FAT32 reader", initResult.exceptionOrNull())
+                        return null
+                    }
+                    fileSystemReaders[volumePath] = fsReader
+                    return fsReader
+                }
+                else -> {
+                    if (DEBUG_LOGGING) Log.d(TAG, "Volume $volumePath is not FAT32 — use getOrCreateExFatReader")
+                    return null
+                }
+            }
+        } finally {
+            fsReaderLock.unlock()
+        }
+    }
+
+    /**
+     * Get or create a shared ExFatReader for the given volume.
+     * Returns null if the volume is not exFAT or initialization fails.
+     */
+    fun getOrCreateExFatReader(volumePath: String): ExFatReader? {
+        fsReaderLock.lock()
+        try {
+            exFatReaders[volumePath]?.let { return it }
+
+            val reader = mountedVolumes[volumePath] ?: return null
+            if (detectFileSystemType(reader) != FileSystemType.EXFAT) return null
+            val fsReader = ExFatReader(reader)
             val initResult = fsReader.initialize()
             if (initResult.isFailure) {
-                if (DEBUG_LOGGING) Log.e(TAG, "Failed to initialize file system reader", initResult.exceptionOrNull())
+                if (DEBUG_LOGGING) Log.e(TAG, "Failed to initialize exFAT reader", initResult.exceptionOrNull())
                 return null
             }
-            fileSystemReaders[volumePath] = fsReader
+            exFatReaders[volumePath] = fsReader
             return fsReader
+        } finally {
+            fsReaderLock.unlock()
+        }
+    }
+
+    /**
+     * Get or create a shared [FileSystemReader] for the given volume, dispatching
+     * to FAT32Reader or ExFatReader based on the boot-sector magic. Returns null
+     * if the volume is not mounted or the FS type cannot be initialized.
+     */
+    fun getFileSystemReader(volumePath: String): FileSystemReader? {
+        fsReaderLock.lock()
+        try {
+            // Already-cached?
+            fileSystemReaders[volumePath]?.let { return it }
+            exFatReaders[volumePath]?.let { return it }
+            val reader = mountedVolumes[volumePath] ?: return null
+            return when (detectFileSystemType(reader)) {
+                FileSystemType.EXFAT -> getOrCreateExFatReader(volumePath)
+                else -> getOrCreateFileSystemReader(volumePath)
+            }
         } finally {
             fsReaderLock.unlock()
         }
@@ -262,8 +347,10 @@ object VolumeMountManager {
         try {
             if (volumePath != null) {
                 fileSystemReaders[volumePath]?.clearCache()
+                exFatReaders[volumePath]?.clearCache()
             } else {
                 fileSystemReaders.values.forEach { it.clearCache() }
+                exFatReaders.values.forEach { it.clearCache() }
             }
         } finally {
             fsReaderLock.unlock()
@@ -309,17 +396,30 @@ object VolumeMountManager {
             val firstSector = firstSectorResult.getOrThrow()
             val info = StringBuilder()
             info.append("File system inspection:\n")
-            
-            // Extract only structural metadata from FAT32 boot sector
-            val oemName = String(firstSector, 3, 8).trim()
-            val bytesPerSector = (firstSector[11].toInt() and 0xFF) or ((firstSector[12].toInt() and 0xFF) shl 8)
-            val sectorsPerCluster = firstSector[13].toInt() and 0xFF
-            val mediaDescriptor = firstSector[21].toInt() and 0xFF
-            
-            info.append("OEM Name: $oemName\n")
-            info.append("Bytes per sector: $bytesPerSector\n")
-            info.append("Sectors per cluster: $sectorsPerCluster\n")
-            info.append("Media descriptor: 0x${String.format("%02X", mediaDescriptor)}\n")
+
+            val fsType = detectFileSystemType(reader)
+            info.append("Detected file system: $fsType\n")
+
+            if (fsType == FileSystemType.EXFAT) {
+                // exFAT-specific Main Boot Sector fields (spec §3.1)
+                val bytesPerSectorShift = firstSector[108].toInt() and 0xFF
+                val sectorsPerClusterShift = firstSector[109].toInt() and 0xFF
+                val numberOfFats = firstSector[110].toInt() and 0xFF
+                info.append("Bytes per sector: ${1 shl bytesPerSectorShift}\n")
+                info.append("Sectors per cluster: ${1 shl sectorsPerClusterShift}\n")
+                info.append("Number of FATs: $numberOfFats\n")
+            } else {
+                // FAT32 boot sector metadata
+                val oemName = String(firstSector, 3, 8).trim()
+                val bytesPerSector = (firstSector[11].toInt() and 0xFF) or ((firstSector[12].toInt() and 0xFF) shl 8)
+                val sectorsPerCluster = firstSector[13].toInt() and 0xFF
+                val mediaDescriptor = firstSector[21].toInt() and 0xFF
+
+                info.append("OEM Name: $oemName\n")
+                info.append("Bytes per sector: $bytesPerSector\n")
+                info.append("Sectors per cluster: $sectorsPerCluster\n")
+                info.append("Media descriptor: 0x${String.format("%02X", mediaDescriptor)}\n")
+            }
             
             Result.success(info.toString())
         } catch (e: Exception) {
